@@ -1,0 +1,10 @@
+torch
+transformers
+pandas
+tqdm
+openai-whisper
+exifread
+moviepy
+geopy
+mutagen
+pillow
