@@ -10,7 +10,7 @@ from tqdm import tqdm
 from PIL import Image, ImageTk
 
 from ai_tools import AITools
-from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media
+from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media, format_time2mmss
 
 
 class MediaAnalyzerGUI:
@@ -36,8 +36,61 @@ class MediaAnalyzerGUI:
         filemenu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=filemenu)
         self.root.config(menu=menubar)
+        # Hilfe-Menü
+        helpmenu = Menu(menubar, tearoff=0)
+        helpmenu.add_command(label="Was ist das?", command=self.show_help_info)
+        helpmenu.add_command(label="Info BLIP", command=self.show_help_blip)
+        helpmenu.add_command(label="Info WHISPER", command=self.show_help_whisper)
+        helpmenu.add_separator()
+        helpmenu.add_command(label="Info", command=self.show_info)
+        menubar.add_cascade(label="Hilfe", menu=helpmenu)
 
-    # ---------------- Layout / Konfiguration ----------------
+        self.root.config(menu=menubar)
+
+    def show_help_info(self):
+        messagebox.showinfo("Was ist das?", "Mit dieser Anwendung kannst Du Deine Medienalben\n"
+                                                        "Fotos, Videos und sogar Audiodateien\n"
+                                                        "automatisch beschreiben lassen. Dazu werden zwei\n"
+                                                        "KI-Modelle genutzt, die lokal ausgeführt werden.\n"
+                                                        "Deine Daten sind sicher. Ausgabe ist eine exportierbare\n"
+                                                        "Liste, die Filename, Orte, Bild- und Audio-Inhalt erkennt.\n"
+                                                        "Audios können als Text ausgegeben werden (multilingual).\n"
+                                                        "Aus Videos werden Einzelbilder herausgezogen und beschrieben.\n\n"
+                                                        "Beispiel Anwendungsfälle:\n"
+                                                        "Urlaubsbilder: Ort herausfinden und Kurzbeschreibung, was darauf ist.\n"
+                                                        "Lernvideos: Transkipt erstellen und alle 30 sec Bild speichern.\n"
+                                                        "Hörbuch: In Text verwandeln.")
+
+    def show_help_blip(self):
+        messagebox.showinfo("Info", "Die Offline KI BLIP macht kurze Bildbeschreibungen.\n" 
+            "Man kann die maximale Anzahl Tokens anpassen, aber in der Realität verändert sich nicht viel.\n"
+            "Voreinstellung hier ist 100.\n"
+            "\nBLIP  wurde von Salesforce Research entwickelt und\n"
+            "steht unter der Apache License 2.0 https://spdx.org/licenses/Apache-2.0.html\n"
+                            )
+    def show_help_whisper(self):
+        messagebox.showinfo("Info", "Die Offline KI Whisper transkribiert Audios.\n" 
+            "️Mögliche Whisper-Modelle zur Auswahl:\n"
+            "Name	Größe (RAM)	Geschwindigkeit	Genauigkeit	Bemerkung\n"
+            "tiny\t	~75 MB	\t⚡ Sehr schnell	\t😐 Gering	Nur für sehr saubere, kurze Audios ohne Akzent\n"
+            "base\t	~142 MB	\t🔸 Schnell	\t🙂 Mittelmäßig	Gute Wahl bei klarer Sprache, ruhiger Umgebung\n"
+            "small\t	~466 MB	\t⚖️ Ausgewogen	\t👍 Gut	Sehr gutes Preis-Leistungs-Verhältnis (Standard)\n"
+            "medium\t	~1.5 GB	\t🐢 Langsamer	\t💪 Sehr gut	Bessere Erkennung bei Akzenten & Hintergrundgeräuschen\n"
+            "large / large-v2 / large-v3	~3–6 GB	\t🐌 Deutlich langsamer	\t🧠 Exzellent	Fast professionelle Qualität, sehr robust bei Rauschen, Akzent, Mehrsprachigkeit\n"
+            "\nWhisper wurde von OpenAI entwickelt und\n"
+            "          steht unter der MIT Lizenz https://spdx.org/licenses/MIT.html\n"
+        )
+
+    def show_info(self):
+        messagebox.showinfo("Info", "Version 1.0\nErstellt von Stefan Markgraf.\n"
+                                 "Lizenz: MIT\n\n"
+                                 "Benutzte KI-Modelle und Services:\n"
+                                 "* BLIP - Bildbeschreibung\n"
+                                 "* WHISPER - Audio Transkripte\n"
+                                 "* NOMINATIM - Koordinaten zu Adresse (OpenStreetMaps basiert)")
+
+
+        # ---------------- Layout / Konfiguration ----------------
     def create_top_controls(self):
         config_frame = Frame(self.root)
         config_frame.pack(fill=X, pady=10, padx=10)
@@ -51,29 +104,30 @@ class MediaAnalyzerGUI:
             values=["tiny", "base", "small", "medium", "large-v3"],
             state="readonly", width=10
         )
-        self.model_menu.grid(row=0, column=1, padx=5)
-
-        # --- Zeile 1b: Analyse-Intervall ---
-        Label(config_frame, text="⏱ Video Analyse-Intervall (Sek.):", font=("Arial", 11)).grid(row=0, column=2, sticky=W, padx=15)
-        self.interval_var = StringVar(value="10")
-        ttk.Entry(config_frame, textvariable=self.interval_var, width=6).grid(row=0, column=3, padx=5)
-
-        # --- Zeile 2: Optionen ---
-        Label(config_frame, text="⚙️ Optionen:", font=("Arial", 11)).grid(row=1, column=0, sticky=W, padx=5, pady=(5,0))
-        self.save_frames_var = IntVar(value=0)
+        self.model_menu.grid(row=0, column=1, sticky=W, padx=5)
         self.save_transcript_var = IntVar(value=0)
-        Checkbutton(config_frame, text="Frames speichern", variable=self.save_frames_var).grid(row=1, column=1, sticky=W)
-        Checkbutton(config_frame, text="Transkripte speichern", variable=self.save_transcript_var).grid(row=1, column=2, sticky=W)
+        Checkbutton(config_frame, text="Transkripte speichern", variable=self.save_transcript_var).grid(row=0, column=2, sticky=W)
+
+        # --- Zeile 2: Analyse-Intervall ---
+        Label(config_frame, text="⏱ Video Analyse-Intervall (Sek.):", font=("Arial", 11)).grid(row=1, column=0, sticky=W, padx=5)
+        self.interval_var = StringVar(value="10")
+        ttk.Entry(config_frame, textvariable=self.interval_var, width=6).grid(row=1, column=1, sticky=W, padx=5)
+        self.save_frames_var = IntVar(value=0)
+        Checkbutton(config_frame, text="Frames speichern", variable=self.save_frames_var).grid(row=1, column=2, sticky=W)
+
 
         # --- Zeile 3: Ordnerwahl ---
-        Label(config_frame, text="📂 Wähle einen Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky=W, padx=5, pady=(10,0))
-        Button(config_frame, text="Ordner auswählen", command=self.choose_folder).grid(row=2, column=1, padx=5, pady=(10,0))
+        Label(config_frame, text="📂 Analyse File/Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky=W, padx=5, pady=(10,0))
+        Button(config_frame, text="Ordner auswählen", command=self.choose_folder).grid(row=2, column=1, sticky=W, padx=5, pady=(10,0))
+        Button(config_frame, text="File auswählen", command=self.choose_single_file).grid(row=2, column=2, sticky=W, padx=5, pady=(10, 0))
 
         # Fortschritt
+        self.status_label = Label(config_frame, text="Status", font=("Arial", 10))
+        self.status_label.grid(row=3, column=0, sticky=W, padx=5, pady=(10, 0))
+        self.status_label2 = Label(config_frame, text="Fortschritt:", font=("Arial", 10))
+        self.status_label2.grid(row=3, column=1, sticky=W, padx=5, pady=(10, 0))
         self.progress = ttk.Progressbar(config_frame, orient="horizontal", length=400, mode="determinate")
-        self.progress.grid(row=2, column=2, padx=20, pady=(10,0))
-        self.status_label = Label(config_frame, text="", font=("Arial", 10))
-        self.status_label.grid(row=2, column=3, sticky=W, pady=(10,0))
+        self.progress.grid(row=3, column=2, sticky=W, padx=5, pady=(10,0))
 
     # ---------------- Tabelle ----------------
     def create_table(self):
@@ -164,6 +218,8 @@ class MediaAnalyzerGUI:
                 rec["Length"] = meta.get("Length", "")
                 if kind == "image":
                     image_text = self.aitools.describe_image(path)
+                    if self.save_transcript_var.get():
+                        self._save_transcript(file_path, image_text.translate(str.maketrans("|", '\n')))
                 elif kind == "video":
                     image_text = self.aitools.describe_video_by_frames(path, interval)
                     audio_text = self.aitools.transcribe_audio(path)
@@ -178,12 +234,14 @@ class MediaAnalyzerGUI:
                 # Saved transcript contains Audio+Image Content
                 if self.save_transcript_var.get():
                     if audio_text != "" and image_text != "":
-                        text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
-                    else:
-                        text = audio_text + image_text.translate(str.maketrans("|", '\n'))
+                        text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
+                    elif kind == "audio" or "video":
+                        text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
+
                     textfile = f"{path}.txt"
-                    with open(textfile, "w", encoding="utf-8") as f:
-                        f.write(text)
+                    if text != "":
+                        with open(textfile, "w", encoding="utf-8") as f:
+                            f.write(text)
 
             except Exception as e:
                 print("⚠️ Fehler bei:", path, e)
@@ -196,61 +254,17 @@ class MediaAnalyzerGUI:
                 text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
                 self.show_result_window(file_path, kind, text)
 
-
         df = pd.DataFrame(records)
         out_path = os.path.join(folder, "_media_analysis.csv")
         df.to_csv(out_path, sep=";", index=False, encoding="utf-8-sig")
-        self.status_label.config(text=f"✅ Fertig → {out_path}")
+        out_file = os.path.basename(out_path)
+        self.status_label.config(text=f"✅ Fertig → {out_file}")
 
         messagebox.showinfo("Fertig", f"Analyse abgeschlossen.\nDatei gespeichert unter:\n{out_path}")
 
     # ---------------- Single File Mode ----------------
     def analyze_single_file(self, file_path):
         self.analyze_folder(file_path)
-
-    def _analyze_single_file(self, file_path):
-        whisper_choice:str = self.model_var.get()
-        interval = int(self.interval_var.get())
-        self.aitools = AITools(audio_model_size=whisper_choice)
-        ext = os.path.splitext(file_path)[1].lower()
-        kind = get_kind_of_media(file_path)
-        records = []
-        rec = {"File": os.path.basename(file_path), "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "",
-               "Length": "", "Address": "", "Image": "", "Audio": ""}
-
-        image_text = ""
-        audio_text = ""
-        try:
-            meta = get_meta_data(file_path)
-            rec["Date"] = meta.get("Date", "")
-            rec["Lat"] = meta.get("Lat", "")
-            rec["Lon"] = meta.get("Lon", "")
-            rec["Length"] = meta.get("Length", "")
-            rec["Address"] = meta.get("Address", "")
-
-            if kind == "image":
-                image_text = self.aitools.describe_image(file_path)
-                if self.save_transcript_var.get():
-                    self._save_transcript(file_path, image_text.translate(str.maketrans("|", '\n')))
-            elif kind == "video":
-                image_text = self.aitools.describe_video_by_frames(file_path, interval)
-                audio_text = self.aitools.transcribe_audio(file_path)
-                if self.save_frames_var.get():
-                    self._save_video_frames(file_path, interval)
-            elif kind == "audio":
-                audio_text = self.aitools.transcribe_audio(file_path)
-                if audio_text:
-                    audio_text = "Kein Transkript verfügbar."
-
-            rec["Audio"] = audio_text
-            rec["Image"] = image_text
-            text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
-            self.show_result_window(file_path, kind, text)
-
-        except Exception as e:
-            print("⚠️ Fehler bei:", file_path, e)
-        records.append(rec)
-        self.tree.insert("", "end", values=tuple(rec.values()))
 
     def show_result_window(self, file_path, kind, result_text):
         win = Toplevel(self.root)
@@ -276,7 +290,8 @@ class MediaAnalyzerGUI:
             frame = clip.get_frame(t)
             img = Image.fromarray(frame)
             seq = int(t / interval) + 1
-            out_name = f"{base} - {seq:04d}.png"  # TODO mm:ss
+            mmss = format_time2mmss(t).replace(":", "-")
+            out_name = f"{base} - {mmss}.png"
             img.save(out_name)
             t += interval
         clip.close()

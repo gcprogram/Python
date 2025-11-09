@@ -122,7 +122,7 @@ class AITools:
                 try:
                     frame = clip.get_frame(t)
                     image = Image.fromarray(frame)
-                    caption = self.descibe_image(image)
+                    caption = self.describe_image(image)
                     if caption != last_caption:
                         fmt_mm_ss = format_time2mmss(t)
                         captions.append(f"{fmt_mm_ss} {caption}")
