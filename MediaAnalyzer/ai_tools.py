@@ -1,12 +1,12 @@
 from os.path import exists, join
-from PIL import Image
-from transformers import BlipProcessor, BlipForConditionalGeneration
-import torch
-from pathlib import Path
+
 import numpy as np
-from moviepy.video.io.VideoFileClip import VideoFileClip
 import whisper
-import media_tools
+from PIL import Image
+from moviepy.video.io.VideoFileClip import VideoFileClip
+from transformers import BlipProcessor, BlipForConditionalGeneration
+
+from media_tools import format_time2mmss
 
 """
 🎚️ 1. Mögliche Whisper-Modelle
@@ -20,7 +20,7 @@ large / large-v2 / large-v3	~3–6 GB	🐌 Deutlich langsamer	🧠 Exzellent	Fas
 
 
 
-class DescriptionGenerator:
+class AITools:
     """
     Klasse zur einmaligen Initialisierung des BLIP- (Image) und Whisper-Modells (Audio)
     sowie zur Generierung von Bild- und Video-Untertiteln.
@@ -80,31 +80,38 @@ class DescriptionGenerator:
         self.audio_model = whisper.load_model(audio_model_size)
         print(f"✅ Audioerkennung erfolgreich gespeichert in: HOME/.cache/whisper/{audio_model_size}.pt")
 
+    ###################################################################
     # ------------------ BILDER ------------------
-    def generate_caption(self, image_path):
+    # Describe the image with BLIP AI model
+    # image_or_path is either an image of a filepath to an image.
+    ###################################################################
+    def describe_image(self, image_or_path):
         """Generiert eine Bildunterschrift für ein einzelnes Bild."""
         if self.image_model is None or self.image_processor is None:
             raise RuntimeError("Das BLIP-Modell ist nicht initialisiert.")
 
+        # Prüfen, ob die Eingabe ein PIL.Image-Objekt ist
+        if not isinstance(image_or_path, Image.Image):
+            image = Image.open(image_or_path).convert("RGB")
+        else:
+            image = image_or_path
         try:
-            image = Image.open(image_path).convert("RGB")
             inputs = self.image_processor(image, return_tensors="pt")
             out = self.image_model.generate(**inputs, max_new_tokens=100)
             caption = self.image_processor.decode(out[0], skip_special_tokens=True)
             return caption.capitalize()
         except FileNotFoundError:
-            return f"Fehler: Bilddatei nicht gefunden unter {image_path}"
+            return f"Fehler: Bilddatei nicht gefunden unter {image_or_path}"
         except Exception as e:
             return f"Fehler bei der Generierung der Unterschrift: {e}"
 
+    ###################################################################
     # ------------------ VIDEOS ------------------
-    def summarize_video_with_frames(self, video_path, interval=10):
-        """
-        Erstellt eine Beschreibung eines Videos, indem mehrere Frames mit BLIP analysiert werden
-        und das Transkript mit Whisper kombiniert wird.
-        """
+    # Describe Video by extracting frame images every interval seconds
+    # and use describe_image on each interval frame.
+    ###################################################################
+    def describe_video_by_frames(self, video_path, interval=10):
         captions = []
-        spoken_text = ""
         try:
             clip = VideoFileClip(video_path)
             print(f"🎞 Analysiere Video: {video_path}")
@@ -115,10 +122,11 @@ class DescriptionGenerator:
                 try:
                     frame = clip.get_frame(t)
                     image = Image.fromarray(frame)
-                    caption = self._generate_caption_from_image(image)
+                    caption = self.descibe_image(image)
                     if caption != last_caption:
-                        fmt_mm_ss = _format_time2mmss(t)
+                        fmt_mm_ss = format_time2mmss(t)
                         captions.append(f"{fmt_mm_ss} {caption}")
+                    last_caption = caption
                 except Exception as e:
                     print("⚠️ Frame-Analyse-Fehler:", e)
                     continue
@@ -127,33 +135,16 @@ class DescriptionGenerator:
             print("⚠️ Fehler beim Lesen des Videos:", e)
             return f"[Fehler beim Analysieren des Videos: {e}]"
 
-        # Transkription
-        try:
-            result = self.audio_model.transcribe(video_path, fp16=False)
-            spoken_text = result.get("text", "").strip()
-        except Exception as e:
-            print("⚠️ Transkriptionsfehler:", e)
-            spoken_text = ""
-
         # Kombinieren
-        visual_summary = " | ".join(captions)
-        if spoken_text:
-            summary = f"{visual_summary}. Gesprochen: {spoken_text}..."
-        else:
-            summary = visual_summary
-
+        summary = " | ".join(captions)
         return summary.strip()
 
+    ###################################################################
+    # Do Audio2Text
+    ###################################################################
     def transcribe_audio(self, path):
         try:
             result = self.audio_model.transcribe(audio=path, fp16=False)  # ignore model warning
             return result["text"].strip()
         except Exception:
             return ""
-
-    def _generate_caption_from_image(self, image):
-        """Hilfsfunktion: Caption direkt aus PIL-Image."""
-        inputs = self.image_processor(image, return_tensors="pt")
-        out = self.image_model.generate(**inputs, max_new_tokens=100)
-        return self.image_processor.decode(out[0], skip_special_tokens=True).capitalize()
-
