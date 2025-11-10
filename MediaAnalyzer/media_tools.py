@@ -69,6 +69,25 @@ def _convert_to_degrees(value):
         return d + (m / 60.0) + (s / 3600.0)
     except Exception:
         return None
+###############################################
+# Format date of different formats to
+# YYYY-mm-dd HH-MM-SS
+###############################################
+def format_date(self, date_str):
+    if not date_str:
+        return ""
+    try:
+        # mögliche Formate aus EXIF / FFProbe
+        for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.strptime(date_str[:19], fmt)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return date_str  # falls nicht parsbar, original zurückgeben
+
 
 #############################################
 # Find date of a video file

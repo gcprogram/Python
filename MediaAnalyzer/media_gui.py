@@ -4,21 +4,25 @@ import threading
 import pandas as pd
 from tkinter import (
     Tk, Frame, Button, Label, filedialog, ttk, messagebox, Text,
-    Scrollbar, Checkbutton, IntVar, StringVar, Menu, Toplevel, END, BOTH, X, Y, RIGHT, BOTTOM, W
+    Scrollbar, Checkbutton, IntVar, StringVar, Menu, Toplevel, Canvas, PhotoImage, END, BOTH, X, Y, RIGHT, BOTTOM, W
 )
 from tqdm import tqdm
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ExifTags
 
 from ai_tools import AITools
 from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media, format_time2mmss
-
+import subprocess
+from moviepy.video.io.VideoFileClip import VideoFileClip
 
 class MediaAnalyzerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("🧭 Medien Analyse")
         self.root.geometry("1200x750")
-
+        # Cache für Thumbnail-Pfade
+        self._last_thumb_path = None
+        self._last_thumb_image = None
+        self.folder = None
         self.create_menu()
         self.create_top_controls()
         self.create_table()
@@ -137,7 +141,7 @@ class MediaAnalyzerGUI:
         cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Image", "Audio")
         self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=20)
         for col in cols:
-            self.tree.heading(col, text=col)
+            self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c, False))
             width = {"File": 105, "Type": 35, "Date": 100, "Lat":55, "Lon":55, "Length": 50, "Address": 150, "Image": 250, "Audio": 250}.get(col, 100)
             self.tree.column(col, width=width, anchor="w")
 
@@ -152,16 +156,156 @@ class MediaAnalyzerGUI:
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
+        # Thumbnail-Hover
+        self.thumb_window = None
+        self._last_thumb_path = None
+        self._last_thumb_image = None
+        self.tree.bind("<Motion>", self.on_hover)
+        self.tree.bind("<Leave>", self.on_leave)
+
+        # Double-Click Play
+        self.tree.bind("<Double-1>", self.on_double_click)
 
         # Make the tree expand when window is resized
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
+    # ---- Thumbnail Hover ----
+    def on_hover(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            self.hide_thumbnail()
+            return
+        row_id = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        if not row_id or col != "#1":  # Spalte 1 = Datei
+            self.hide_thumbnail()
+            return
+
+        values = self.tree.item(row_id, "values")
+        if not values:
+            return
+        filename = values[0]
+        if not filename.lower().endswith((".jpg", ".jpeg", ".png")):
+            self.hide_thumbnail()
+            return
+        #folder = getattr(self, "current_folder", "")
+        folder = self.folder
+        print("file=", filename)
+        print("folder=", folder)
+
+        path = os.path.join(folder, filename)
+        if not os.path.exists(path):
+            self.hide_thumbnail()
+            return
+
+        # Debounce: gleiches File wie letztes? Dann nicht neu laden
+        if self._last_thumb_path == path:
+            return
+
+        self._last_thumb_path = path
+        if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+            self.show_image_thumbnail(path, event.x_root, event.y_root)
+        elif filename.lower().endswith((".mp4", ".mov", ".avi")):
+            self.show_video_thumbnail(path, event.x_root, event.y_root)
+
+    def show_video_thumbnail(self, path, x, y):
+        try:
+            clip = VideoFileClip(path)
+            mid = clip.duration / 2
+            frame = clip.get_frame(mid)  # numpy array
+            clip.close()
+            img = Image.fromarray(frame)
+            img.thumbnail((200, 200))
+            photo = ImageTk.PhotoImage(img)
+            self._last_thumb_image = photo
+            self._show_thumbnail_window(photo, x, y)
+        except Exception:
+            self.hide_thumbnail()
+
+    def _show_thumbnail_window(self, photo, x, y):
+        if self.thumb_window:
+            self.thumb_window.destroy()
+        self.thumb_window = Toplevel(self.root)
+        self.thumb_window.overrideredirect(True)
+        self.thumb_window.geometry(f"+{x + 20}+{y + 20}")
+        label = Label(self.thumb_window, image=photo)
+        label.image = photo
+        label.pack()
+
+    def on_leave(self, event):
+        self.hide_thumbnail()
+        self._last_thumb_path = None
+        self._last_thumb_image = None
+
+    def show_image_thumbnail(self, path, x, y):
+        try:
+            img = Image.open(path)
+            # Orientierung aus EXIF
+            try:
+                for orientation in ExifTags.TAGS.keys():
+                    if ExifTags.TAGS[orientation] == 'Orientation':
+                        break
+                exif = img._getexif()
+                if exif and orientation in exif:
+                    o = exif[orientation]
+                    if o == 3:
+                        img = img.rotate(180, expand=True)
+                    elif o == 6:
+                        img = img.rotate(270, expand=True)
+                    elif o == 8:
+                        img = img.rotate(90, expand=True)
+            except Exception:
+                pass
+            img.thumbnail((200, 200))
+            photo = ImageTk.PhotoImage(img)
+            self._last_thumb_image = photo
+            self._show_thumbnail_window(photo, x, y)
+        except Exception:
+            self.hide_thumbnail()
+
+    def hide_thumbnail(self):
+        if self.thumb_window:
+            self.thumb_window.destroy()
+            self.thumb_window = None
+
+    def setup_click_play(self):
+        self.tree.bind("<Double-1>", self.on_double_click)
+
+    def on_double_click(self, event):
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+        values = self.tree.item(row_id, "values")
+        filename = values[0]
+        folder = getattr(self, "current_folder", "")
+        path = os.path.join(folder, filename)
+        if os.path.exists(path) and filename.lower().endswith((".mp4", ".mov", ".avi")):
+            # Standard Video-Player öffnen
+            if os.name == "nt":  # Windows
+                os.startfile(path)
+            elif os.name == "posix":  # macOS/Linux
+                print("masOS, Linux Playback not implemented yet")
+                #subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", path])
+
+
+    # ---- Tabellen-Sortierung ----
+    def sort_column(self, col, reverse):
+        items = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
+        try:
+            items.sort(key=lambda t: (float(t[0]) if t[0].replace('.', '', 1).isdigit() else t[0].lower()),
+                        reverse=reverse)
+        except Exception:
+            items.sort(key=lambda t: t[0].lower(), reverse=reverse)
+        for index, (val, k) in enumerate(items):
+            self.tree.move(k, '', index)
+        self.tree.heading(col, command=lambda: self.sort_column(col, not reverse))
+
     # ---------------- Analyse ----------------
     def choose_folder(self):
-        folder = filedialog.askdirectory(title="Verzeichnis wählen")
-        if folder:
-            threading.Thread(target=self.analyze_folder, args=(folder,), daemon=True).start()
+        self.folder = filedialog.askdirectory(title="Verzeichnis wählen")
+        if self.folder:
+            threading.Thread(target=self.analyze_folder, args=(self.folder,), daemon=True).start()
 
     def choose_single_file(self):
         file = filedialog.askopenfilename(
@@ -169,6 +313,7 @@ class MediaAnalyzerGUI:
             filetypes=[("Medien", "*.jpg *.jpeg *.png *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac"), ("Alle Dateien", "*.*")]
         )
         if file:
+            self.folder = os.path.dirname(file)
             threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
 
     def analyze_folder(self, file_path):
