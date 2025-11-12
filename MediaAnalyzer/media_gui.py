@@ -278,7 +278,8 @@ class MediaAnalyzerGUI:
             return
         values = self.tree.item(row_id, "values")
         filename = values[0]
-        folder = getattr(self, "current_folder", "")
+        #folder = getattr(self, "current_folder", "")
+        folder = self.folder
         path = os.path.join(folder, filename)
         if os.path.exists(path) and filename.lower().endswith((".mp4", ".mov", ".avi")):
             # Standard Video-Player öffnen
