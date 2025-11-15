@@ -5,6 +5,7 @@ import json
 import re
 import os
 from datetime import datetime
+from dateutil import parser
 from geopy import Nominatim
 from moviepy.video.io.VideoFileClip import VideoFileClip  # <- korrigierter Import
 from typing import Tuple, Dict, Any
@@ -343,8 +344,24 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
         # creation_time: check format.tags and streams[*].tags
         tags = fmt.get("tags") or {}
         creation = tags.get("creation_time") or tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
-        if creation:
-            result["Date"] = creation
+
+        if True:
+            if creation:
+                try:
+                    c = creation.strip()
+                    if c.endswith("Z"):
+                        c = c[:-1]
+                    try:
+                        dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S")
+                    result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception as e:
+                    print(f"⚠️ Fehler beim Parsen von creation_time: {creation} ({e})")
+        else:
+            # funktioniert nicht mit Package: from dateutil import parser
+            dt = parser.isoparse(creation)
+            result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
 
         # check stream tags as well
         streams = info.get("streams", [])

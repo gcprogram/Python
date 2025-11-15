@@ -8,3 +8,4 @@ moviepy
 geopy
 mutagen
 pillow
+huggingface_hub[hf_xet]
