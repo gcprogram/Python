@@ -1,5 +1,5 @@
 from os.path import exists, join
-
+from pathlib import Path
 import numpy as np
 import whisper
 from PIL import Image
@@ -26,7 +26,7 @@ class AITools:
     sowie zur Generierung von Bild- und Video-Untertiteln.
     """
 
-    DEFAULT_IMAGE_MODEL_PATH = "./image_ai" # Path.home() / ".cache/huggingface/hug"
+    DEFAULT_IMAGE_MODEL_PATH = Path.home() / ".cache/huggingface/hug"
     IMAGE_MODEL_NAME = "Salesforce/blip-image-captioning-base"
 
     def __init__(self, image_model_path=None, audio_model_size="small"):

@@ -145,6 +145,7 @@ class MediaAnalyzerGUI:
             width = {"File": 105, "Type": 35, "Date": 100, "Lat":55, "Lon":55, "Length": 50, "Address": 150, "Image": 250, "Audio": 250}.get(col, 100)
             self.tree.column(col, width=width, anchor="w")
 
+        self.setup_click_play()
         # Scrollbars anlegen
         vsb = Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         hsb = Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
@@ -181,19 +182,18 @@ class MediaAnalyzerGUI:
         if not row_id or col != "#1":  # Spalte 1 = Datei
             self.hide_thumbnail()
             return
-
         values = self.tree.item(row_id, "values")
         if not values:
             return
         filename = values[0]
-        if not filename.lower().endswith((".jpg", ".jpeg", ".png")):
+        if self._last_thumb_path == filename:
+            return
+
+        if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi")):
             self.hide_thumbnail()
             return
         #folder = getattr(self, "current_folder", "")
         folder = self.folder
-        print("file=", filename)
-        print("folder=", folder)
-
         path = os.path.join(folder, filename)
         if not os.path.exists(path):
             self.hide_thumbnail()
@@ -207,10 +207,12 @@ class MediaAnalyzerGUI:
         if filename.lower().endswith((".jpg", ".jpeg", ".png")):
             self.show_image_thumbnail(path, event.x_root, event.y_root)
         elif filename.lower().endswith((".mp4", ".mov", ".avi")):
+            print("Is video thumbnail")
             self.show_video_thumbnail(path, event.x_root, event.y_root)
 
     def show_video_thumbnail(self, path, x, y):
         try:
+            print("path=", path)
             clip = VideoFileClip(path)
             mid = clip.duration / 2
             frame = clip.get_frame(mid)  # numpy array
@@ -306,6 +308,7 @@ class MediaAnalyzerGUI:
     def choose_folder(self):
         self.folder = filedialog.askdirectory(title="Verzeichnis wählen")
         if self.folder:
+            self.current_folder = self.folder
             threading.Thread(target=self.analyze_folder, args=(self.folder,), daemon=True).start()
 
     def choose_single_file(self):
@@ -315,6 +318,7 @@ class MediaAnalyzerGUI:
         )
         if file:
             self.folder = os.path.dirname(file)
+            self.current_folder = self.folder
             threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
 
     def analyze_folder(self, file_path):
