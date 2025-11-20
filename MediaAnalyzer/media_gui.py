@@ -1,11 +1,14 @@
 # media_gui.py
 import os
 import threading
+import time
 import pandas as pd
 from tkinter import (
     Tk, Frame, Button, Label, filedialog, ttk, messagebox, Text,
     Scrollbar, Checkbutton, IntVar, StringVar, Menu, Toplevel, Canvas, PhotoImage, END, BOTH, X, Y, RIGHT, BOTTOM, W
 )
+from tkinter import font as tkfont
+import math
 from tqdm import tqdm
 from PIL import Image, ImageTk, ExifTags
 
@@ -173,42 +176,218 @@ class MediaAnalyzerGUI:
 
     # ---- Thumbnail Hover ----
     def on_hover(self, event):
+        """
+        Erweitertes Hover-Verhalten:
+        - #1 (Datei): Thumbnail (Bild oder Video-Mittel-Frame)
+        - #8 (Beschreibung) oder #9 (Transkript): Text-Tooltip mit kompletter Beschreibung
+        Debounce: gleiche Datei/Text nicht ständig neu laden.
+        """
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
             self.hide_thumbnail()
+            self.hide_text_tooltip()
             return
+
         row_id = self.tree.identify_row(event.y)
         col = self.tree.identify_column(event.x)
-        if not row_id or col != "#1":  # Spalte 1 = Datei
+        if not row_id or not col:
             self.hide_thumbnail()
+            self.hide_text_tooltip()
             return
+
         values = self.tree.item(row_id, "values")
         if not values:
+            self.hide_thumbnail()
+            self.hide_text_tooltip()
             return
+
+        # Relativer Pfad/Dateiname ist in Spalte 0 (Datei)
         filename = values[0]
-        if self._last_thumb_path == filename:
+        # Die Textfelder sind in Spalte 7 (Beschreibung) und 8 (Transkript) - tree columns sind 1-indexed (#1..)
+        desc_col = "#8"
+        text_col = "#9"
+
+        # Wenn über Dateispalte -> Thumbnail anzeigen
+        if col == "#1":
+            # Verstecke Text-Tooltip, falls sichtbar
+            self.hide_text_tooltip()
+
+            folder = getattr(self, "current_folder", getattr(self, "folder", ""))
+            path = os.path.join(folder, filename)
+            if not os.path.exists(path):
+                self.hide_thumbnail()
+                return
+
+            # Debounce für Thumbnail: identischer Pfad -> nichts tun
+            if self._last_thumb_path == path:
+                return
+            self._last_thumb_path = path
+
+            # Image vs. Video thumbnail
+            if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                self.show_image_thumbnail(path, event.x_root, event.y_root)
+            elif filename.lower().endswith((".mp4", ".mov", ".avi")):
+                self.show_video_thumbnail(path, event.x_root, event.y_root)
+            else:
+                self.hide_thumbnail()
             return
 
-        if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi")):
+        # Wenn über Beschreibung oder Transkript -> Text-Tooltip anzeigen
+        if col in (desc_col, text_col):
+            # Verstecke Thumbnail, falls sichtbar
             self.hide_thumbnail()
-            return
-        #folder = getattr(self, "current_folder", "")
-        folder = self.folder
-        path = os.path.join(folder, filename)
-        if not os.path.exists(path):
-            self.hide_thumbnail()
+
+            # Den kompletten Text aus der jeweiligen Spalte holen
+            # tree.set benötigt den item id und die column name (hier nutzen wir index via values)
+            # values ist ein tuple entsprechend der Spaltenreihenfolge
+            # Beschreibung = values[7], Transkript = values[8]
+            try:
+                if col == desc_col:
+                    full_text = values[7] or ""
+                else:
+                    full_text = values[8] or ""
+            except Exception:
+                full_text = ""
+
+            # Wenn kein Text -> nichts anzeigen
+            if not full_text.strip():
+                self.hide_text_tooltip()
+                return
+
+            # Debounce: gleiches Text-Tooltip vermeiden
+            if getattr(self, "_last_tooltip_text", None) == full_text:
+                return
+            self._last_tooltip_text = full_text
+
+            # Zeige Tooltip (mit max Größe und Scrollbar falls nötig)
+            self.show_text_tooltip(full_text, event.x_root + 15, event.y_root + 15)
             return
 
-        # Debounce: gleiches File wie letztes? Dann nicht neu laden
-        if self._last_thumb_path == path:
-            return
+        # In allen anderen Fällen beides verbergen
+        self.hide_thumbnail()
+        self.hide_text_tooltip()
 
-        self._last_thumb_path = path
-        if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-            self.show_image_thumbnail(path, event.x_root, event.y_root)
-        elif filename.lower().endswith((".mp4", ".mov", ".avi")):
-            print("Is video thumbnail")
-            self.show_video_thumbnail(path, event.x_root, event.y_root)
+    ###########################################
+    # Zeigt Tooltips von Image und Audio Description.
+    ###########################################
+    def show_text_tooltip(self, text, x, y, max_width_px=600, max_height_px=500, padding=12):
+        """
+        Zeigt einen scrollbaren, automatisch umgebrochenen Text-Tooltip an Position (x,y).
+        Die Breite ist begrenzt durch max_width_px; die Höhe passt sich an den Textumfang an,
+        aber nicht größer als max_height_px.
+        """
+        # Falls bereits ein Text-Tooltip existiert, aktualisiere nur Inhalt & Größe
+        if getattr(self, "text_tooltip_window", None):
+            try:
+                ta = self.text_tooltip_window_text
+                ta.config(state="normal")
+                ta.delete("1.0", "end")
+                ta.insert("1.0", text)
+                ta.config(state="disabled")
+                # Recompute size and reposition
+                self._adjust_tooltip_size(text, max_width_px, max_height_px, padding)
+                self.text_tooltip_window.geometry(f"+{x}+{y}")
+                return
+            except Exception:
+                try:
+                    self.text_tooltip_window.destroy()
+                except:
+                    pass
+                self.text_tooltip_window = None
+
+        # Neues Toplevel erstellen
+        win = Toplevel(self.root)
+        win.wm_overrideredirect(True)  # kein Titlebar
+        # Frame mit Text + Scrollbar
+        frame = Frame(win, bd=1, relief="solid")
+        frame.pack(fill="both", expand=True)
+
+        vsb = Scrollbar(frame, orient="vertical")
+        vsb.pack(side="right", fill="y")
+
+        # Text-Widget mit word wrap
+        ta = Text(frame, wrap="word", yscrollcommand=vsb.set, padx=8, pady=6, bd=0)
+        ta.insert("1.0", text)
+        ta.config(state="disabled")
+        ta.pack(fill="both", expand=True)
+        vsb.config(command=ta.yview)
+
+        # Speichere Referenzen für spätere Updates
+        self.text_tooltip_window = win
+        self.text_tooltip_window_text = ta
+
+        # Größe berechnen und setzen
+        self._adjust_tooltip_size(text, max_width_px, max_height_px, padding)
+
+        # Positioniere (achte darauf, nicht aus dem Bildschirm zu ragen)
+        # einfache Positionierung; caller kann X/Y anpassen falls nötig
+        win.geometry(f"+{x}+{y}")
+
+    ###########################################
+    # Berechnet die Größe des Tooltips
+    ###########################################
+    def _adjust_tooltip_size(self, text, max_width_px, max_height_px, padding):
+        """
+        Berechnet geeignete Pixel-Abmessungen für das Tooltip-Fenster basierend
+        auf Textlänge und Fenster-Maxima, und setzt die Geometry.
+        """
+        win = self.text_tooltip_window
+        ta = self.text_tooltip_window_text
+
+        # --- Schritt 1: Temporäre Breite setzen und Umbruch erzwingen ---
+        # Setze die Breite des Text-Widgets in Zeichen auf einen hohen Wert (z.B. 1000),
+        # damit es sich auf die maximale Pixelbreite (max_width_px) des Toplevel ausdehnt.
+        # Wichtig: Die Breite in Zeichen muss auf 0 gesetzt werden,
+        # damit das Widget die Breite des Fensters übernimmt, das wir gleich setzen.
+        ta.config(width=0)
+
+        # Setze die vorläufige Breite des Toplevel, um den Umbruch zu steuern
+        win.geometry(f"{max_width_px}x{max_height_px}")
+        win.update_idletasks()
+
+        # --- Schritt 2: Tatsächliche Zeilenanzahl ermitteln ---
+        try:
+            # Holen der Zeilennummer des letzten Zeichens ('end-1c')
+            # Format ist "Zeile.ZeichenIndex". Wir brauchen die Zeilennummer (Index 0).
+            line_index_str = ta.index('end-1c')
+            actual_lines = int(line_index_str.split('.')[0])
+        except ValueError:
+            # Fallback, falls der Text leer ist oder der Index nicht funktioniert
+            actual_lines = 1
+
+        # --- Schritt 3: Berechnung der notwendigen Höhe ---
+
+        # Schriftart-Metriken abrufen
+        font = tkfont.Font(font=ta.cget('font'))
+        line_height = font.metrics('linespace')  # Höhe einer Zeile in Pixeln
+
+        # Feste Offsets für Padding (pady=6), Frame Border (bd=1) und Toplevel Rahmen
+        # (6 * 2 Text-Widget-Paddings + 1 * 2 Frame-Border)
+        fixed_y_offset = 14
+
+        needed_height = (actual_lines * line_height) + fixed_y_offset
+
+        # --- Schritt 4: Finale Größe setzen ---
+        final_height = min(int(needed_height), max_height_px)
+
+        # Die tatsächliche Breite des Text-Widgets nach dem Umbruch
+        final_width = ta.winfo_width() + 10  # kleiner Puffer hinzufügen
+
+        # Begrenze die Breite auf das Maximum
+        final_width = min(final_width, max_width_px)
+
+        # Setze die finale Geometry
+        win.geometry(f"{final_width}x{final_height}")
+
+    def hide_text_tooltip(self):
+        """Versteckt den Text-Tooltip falls vorhanden."""
+        if getattr(self, "text_tooltip_window", None):
+            try:
+                self.text_tooltip_window.destroy()
+            except:
+                pass
+            self.text_tooltip_window = None
+        self._last_tooltip_text = None
 
     def show_video_thumbnail(self, path, x, y):
         try:
@@ -346,11 +525,16 @@ class MediaAnalyzerGUI:
 
         total = len(all_files)
         self.progress["maximum"] = total
+        self.progress["value"] = 0
+        self.root.update_idletasks()
+
         self.status_label.config(text=f"🔍 Analysiere {total} Dateien...")
 
         self.tree.delete(*self.tree.get_children())
 
         for i, path in enumerate(tqdm(all_files, desc="Analysiere")):
+            # Startzeit
+            start_time = time.time()
             kind = get_kind_of_media(path)
             if kind == "unknown":
                 self.progress["value"] = i + 1
@@ -368,8 +552,6 @@ class MediaAnalyzerGUI:
                 rec["Length"] = meta.get("Length", "")
                 if kind == "image":
                     image_text = self.aitools.describe_image(path)
-                    if self.save_transcript_var.get():
-                        self._save_transcript(file_path, image_text.translate(str.maketrans("|", '\n')))
                 elif kind == "video":
                     image_text = self.aitools.describe_video_by_frames(path, interval)
                     audio_text = self.aitools.transcribe_audio(path)
@@ -403,6 +585,12 @@ class MediaAnalyzerGUI:
             if total == 1:
                 text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
                 self.show_result_window(file_path, kind, text)
+            # Endzeit
+            end_time = time.time()
+           # Zeitdifferenz berechnen
+            elapsed_time = end_time - start_time
+            print(f"Analyse {path} dauerte {elapsed_time:.6f} Sekunden.")
+
 
         df = pd.DataFrame(records)
         out_path = os.path.join(folder, "_media_analysis.csv")
@@ -441,7 +629,7 @@ class MediaAnalyzerGUI:
             img = Image.fromarray(frame)
             seq = int(t / interval) + 1
             mmss = format_time2mmss(t).replace(":", "-")
-            out_name = f"{base} - {mmss}.png"
+            out_name = f"{base}+{mmss}.png"
             img.save(out_name)
             t += interval
         clip.close()
@@ -449,7 +637,7 @@ class MediaAnalyzerGUI:
     def _save_transcript(self, file_path, text):
         """Speichert Transkript in .txt-Datei."""
         base, _ = os.path.splitext(file_path)
-        txt_path = base + "_transkript.txt"
+        txt_path = f"{base}_transkript.txt"
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(text)
 
