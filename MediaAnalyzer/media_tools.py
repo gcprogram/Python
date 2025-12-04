@@ -70,11 +70,13 @@ def _convert_to_degrees(value):
         return d + (m / 60.0) + (s / 3600.0)
     except Exception:
         return None
+
 ###############################################
 # Format date of different formats to
 # YYYY-mm-dd HH-MM-SS
+# unused da es nicht ganz funktioniert.
 ###############################################
-def format_date(self, date_str):
+def _format_date(self, date_str):
     if not date_str:
         return ""
     try:
@@ -83,7 +85,8 @@ def format_date(self, date_str):
             try:
                 dt = datetime.strptime(date_str[:19], fmt)
                 return dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
+            except Exception as e:
+                print(f"Exception in _format_date(): {e}", )
                 pass
     except Exception:
         pass
@@ -94,12 +97,13 @@ def format_date(self, date_str):
 # Find date of a video file
 #############################################
 
-def _get_date_from_metadata(self, filepath):
+def _get_date_from_metadata(filepath):
     """
     Versucht, das Erstellungsdatum aus den Metadaten der Datei zu extrahieren.
     Verwendet PyExifTool für beste Abdeckung.
     Gibt ein datetime-Objekt oder None zurück.
     """
+    print(f"_get_date_from_metadata: {filepath}")
     extension = os.path.splitext(filepath)[1].lower()
     # 1. Fallback-Prüfung: Prüfe auf Dateierstellungsdatum (Windows ctime)
     # Wenn wir keine Metadaten finden, nutzen wir das Datum des Dateisystems
@@ -110,14 +114,14 @@ def _get_date_from_metadata(self, filepath):
     except:
         fallback_date = None
 
-    if extension in self.FILE_TAGS:
+    if extension in FILE_TAGS:
         try:
             # Verwende PyExifTool (erfordert ExifTool-Installation)
             with exiftool.ExifTool() as et:
                 metadata = et.get_metadata(filepath)
 
             # Gehe die priorisierten Tags für diesen Dateityp durch
-            for tag in self.FILE_TAGS[extension]:
+            for tag in FILE_TAGS[extension]:
                 if f'EXIF:{tag}' in metadata or f'QuickTime:{tag}' in metadata or tag in metadata:
                     # Extrahiere den Wert (oft im Format YYYY:MM:DD HH:MM:SS)
                     date_value = metadata.get(f'EXIF:{tag}') or metadata.get(f'QuickTime:{tag}') or metadata.get(
@@ -127,7 +131,7 @@ def _get_date_from_metadata(self, filepath):
                         date_value = date_value.replace(':', '-', 2).replace(':', '.')
                         # Versuche, das Datum/die Uhrzeit zu parsen
                         try:
-                            val = datetime.strptime(date_value, self.DATE_FORMAT_STR)
+                            val = datetime.strptime(date_value, DATE_FORMAT_STR)
                             return val
                         except ValueError:
                             # Versuche, nur das Datum zu parsen
@@ -141,18 +145,32 @@ def _get_date_from_metadata(self, filepath):
             # print(f"Fehler bei PyExifTool für {os.path.basename(filepath)}: {e}")
             pass
 
-    # 2. Fallback: Für Audio-Dateien (WAV) versuchen wir Mutagen
-    if extension == '.wav':
-        try:
-            audio = ID3(filepath)
-            if 'TDRC' in audio:  # Standard-ID3-Tag für Datum/Zeit
-                date_str = str(audio['TDRC']).replace('T', ' ').replace(':', '.')
-                return datetime.strptime(date_str, DATE_FORMAT_STR)
-        except:
-            pass
+        # 2. Fallback: Für Audio-Dateien (WAV) versuchen wir Mutagen
+        if extension == '.wav':
+            try:
+                # 💡 KORREKT: Verwende WAVE von Mutagen
+                audio = WAVE(filepath)
 
-    # 3. Fallback: Rückgabe des Dateisystem-Datums
-    return fallback_date
+                # WAV-Metadaten speichern das Datum oft im 'bext' oder 'info' Chunk als
+                # 'IDAT' (creation date) oder 'date'/'creationdate' im LIST-Chunk.
+                # Da WAV-Tags nicht standardisiert sind wie ID3, ist das schwierig.
+                # Versuche, das 'IDAT' Tag aus dem RIFF-Info-Block zu extrahieren.
+                date_str = None
+                if audio.info and hasattr(audio.info, 'date'):
+                    date_str = audio.info.date
+
+                if date_str:
+                    # Nutze dateutil.parser um flexible Datumsformate zu handhaben
+                    dt_obj = parser.parse(date_str)
+                    return dt_obj
+
+            except Exception as e:
+                # Wenn WAV-Metadaten fehlschlagen, gehen wir zum letzten Fallback
+                # print(f"WAV-Fehler bei {os.path.basename(filepath)}: {e}")
+                pass
+
+        # 3. Fallback: Rückgabe des Dateisystem-Datums
+        return fallback_date
 
 ############################################################
 # Returns type of media file
@@ -180,6 +198,7 @@ def get_meta_data(path: str) -> Dict[str, Any]:
         res = _get_video_metadata(path)
     elif kind == "audio":
         # ... (der Fallback-Block ist hier nicht relevant, da er in _get_date_from_metadata liegt)
+        print(f"get_meta_data: {path}")
         dt_obj = _get_date_from_metadata(path)
         # Sicherstellen, dass das Datum immer im Zielformat (String) gespeichert wird
         if isinstance(dt_obj, datetime):
