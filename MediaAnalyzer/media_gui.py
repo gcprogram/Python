@@ -1,4 +1,3 @@
-# media_gui.py
 import os
 import threading
 import time
@@ -11,6 +10,7 @@ from tkinter import font as tkfont
 import math
 from tqdm import tqdm
 from PIL import Image, ImageTk, ExifTags
+import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
 
 from ai_tools import AITools
 from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media, format_time2mmss
@@ -112,12 +112,12 @@ class MediaAnalyzerGUI:
             state="readonly", width=10
         )
         self.model_menu.grid(row=0, column=1, sticky=W, padx=5)
-        self.save_transcript_var = IntVar(value=0)
+        self.save_transcript_var = IntVar(value=1) # standardmäßig aktiviert
         Checkbutton(config_frame, text="Transkripte speichern", variable=self.save_transcript_var).grid(row=0, column=2, sticky=W)
 
         # --- Zeile 2: Analyse-Intervall ---
         Label(config_frame, text="⏱ Video Analyse-Intervall (Sek.):", font=("Arial", 11)).grid(row=1, column=0, sticky=W, padx=5)
-        self.interval_var = StringVar(value="10")
+        self.interval_var = StringVar(value="30")
         ttk.Entry(config_frame, textvariable=self.interval_var, width=6).grid(row=1, column=1, sticky=W, padx=5)
         self.save_frames_var = IntVar(value=0)
         Checkbutton(config_frame, text="Frames speichern", variable=self.save_frames_var).grid(row=1, column=2, sticky=W)
@@ -503,6 +503,7 @@ class MediaAnalyzerGUI:
     def analyze_folder(self, file_path):
         self.status_label.config(text="📦 Lade KI-Modelle...")
         self.root.update_idletasks()
+        self.tree.delete(*self.tree.get_children())
 
         whisper_choice:str = self.model_var.get()
         self.aitools = AITools(audio_model_size=whisper_choice)
@@ -513,7 +514,6 @@ class MediaAnalyzerGUI:
             # Erzeuge eine Liste von Dateipfaden für alle Dateien im Verzeichnis
             folder = file_path
             all_files = [os.path.join(root, f) for root, _, files in os.walk(file_path) for f in files]
-
         elif os.path.isfile(file_path):
             # Setze all_files auf eine Liste, die nur den angegebenen Dateipfad enthält
             folder = os.path.dirname(file_path)
@@ -522,6 +522,7 @@ class MediaAnalyzerGUI:
             # Bei ungültigem Pfad kann hier ein Fehler ausgelöst oder behandelt werden
             all_files = []
             print("Der angegebene Pfad ist weder eine Datei noch ein Verzeichnis.")
+            return
 
         total = len(all_files)
         self.progress["maximum"] = total
@@ -530,66 +531,66 @@ class MediaAnalyzerGUI:
 
         self.status_label.config(text=f"🔍 Analysiere {total} Dateien...")
 
-        self.tree.delete(*self.tree.get_children())
+        with exiftool.ExifToolHelper() as et:
 
-        for i, path in enumerate(tqdm(all_files, desc="Analysiere")):
-            # Startzeit
-            start_time = time.time()
-            kind = get_kind_of_media(path)
-            if kind == "unknown":
+            for i, path in enumerate(tqdm(all_files, desc="Analysiere")):
+                # Startzeit
+                start_time = time.time()
+                kind = get_kind_of_media(path)
+                if kind == "unknown":
+                    self.progress["value"] = i + 1
+                    continue
+                relpath = os.path.relpath(path, folder)
+                rec = {"File": relpath, "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Image": "", "Audio": ""}
+                image_text = ""
+                audio_text = ""
+                try:
+                    meta = get_meta_data(path, et_instance=et)
+                    rec["Date"] = meta.get("Date", "")
+                    rec["Address"] = meta.get("Address", "")
+                    rec["Lat"] = meta.get("Lat", "")
+                    rec["Lon"] = meta.get("Lon", "")
+                    rec["Length"] = meta.get("Length", "")
+                    if kind == "image":
+                        image_text = self.aitools.describe_image(path)
+                    elif kind == "video":
+                        image_text = self.aitools.describe_video_by_frames(path, interval)
+                        audio_text = self.aitools.transcribe_audio(path)
+                        if self.save_frames_var.get():
+                            self._save_video_frames(path, interval)
+                    elif kind == "audio":
+                        audio_text = self.aitools.transcribe_audio(path)
+
+                    rec["Audio"] = audio_text
+                    rec["Image"] = image_text
+                    text = ""
+                    # Saved transcript contains Audio+Image Content
+                    if self.save_transcript_var.get():
+                        if audio_text != "" and image_text != "":
+                            text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
+                        elif kind == "audio" or "video":
+                            text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
+
+                        textfile = f"{path}.txt"
+                        if kind != 'image' and text != "":
+                            with open(textfile, "w", encoding="utf-8") as f:
+                                f.write(text)
+
+                except Exception as e:
+                    print("⚠️ Fehler bei:", path, e)
+
+                records.append(rec)
+                self.tree.insert("", "end", values=tuple(rec.values()))
                 self.progress["value"] = i + 1
-                continue
-            relpath = os.path.relpath(path, folder)
-            rec = {"File": relpath, "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Image": "", "Audio": ""}
-            image_text = ""
-            audio_text = ""
-            try:
-                meta = get_meta_data(path)
-                rec["Date"] = meta.get("Date", "")
-                rec["Address"] = meta.get("Address", "")
-                rec["Lat"] = meta.get("Lat", "")
-                rec["Lon"] = meta.get("Lon", "")
-                rec["Length"] = meta.get("Length", "")
-                if kind == "image":
-                    image_text = self.aitools.describe_image(path)
-                elif kind == "video":
-                    image_text = self.aitools.describe_video_by_frames(path, interval)
-                    audio_text = self.aitools.transcribe_audio(path)
-                    if self.save_frames_var.get():
-                        self._save_video_frames(path, interval)
-                elif kind == "audio":
-                    audio_text = self.aitools.transcribe_audio(path)
-
-                rec["Audio"] = audio_text
-                rec["Image"] = image_text
-                text = ""
-                # Saved transcript contains Audio+Image Content
-                if self.save_transcript_var.get():
-                    if audio_text != "" and image_text != "":
-                        text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
-                    elif kind == "audio" or "video":
-                        text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
-
-                    textfile = f"{path}.txt"
-                    if text != "":
-                        with open(textfile, "w", encoding="utf-8") as f:
-                            f.write(text)
-
-            except Exception as e:
-                print("⚠️ Fehler bei:", path, e)
-
-            records.append(rec)
-            self.tree.insert("", "end", values=tuple(rec.values()))
-            self.progress["value"] = i + 1
-            self.root.update_idletasks()
-            if total == 1:
-                text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
-                self.show_result_window(file_path, kind, text)
-            # Endzeit
-            end_time = time.time()
-           # Zeitdifferenz berechnen
-            elapsed_time = end_time - start_time
-            print(f"Analyse {path} dauerte {elapsed_time:.6f} Sekunden.")
+                self.root.update_idletasks()
+                if total == 1:
+                    text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
+                    self.show_result_window(file_path, kind, text)
+                # Endzeit
+                end_time = time.time()
+               # Zeitdifferenz berechnen
+                elapsed_time = end_time - start_time
+                print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden.")
 
 
         df = pd.DataFrame(records)
