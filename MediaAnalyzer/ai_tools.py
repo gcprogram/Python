@@ -1,3 +1,4 @@
+import os
 from os.path import exists, join
 from pathlib import Path
 import numpy as np
@@ -28,6 +29,7 @@ class AITools:
 
     DEFAULT_IMAGE_MODEL_PATH = Path.home() / ".cache/huggingface/hug"
     IMAGE_MODEL_NAME = "Salesforce/blip-image-captioning-base"
+    AUDIO_MODEL_PATH = Path.home() / ".cache/whisper/"
 
     def __init__(self, image_model_path=None, audio_model_size="small"):
         # BLIP
@@ -39,13 +41,16 @@ class AITools:
 
         blip_path = image_model_path if image_model_path is not None else self.DEFAULT_IMAGE_MODEL_PATH
         self._load_image_model(blip_path)
-        self._load_audio_model(audio_model_size)
+        self._load_audio_model(self.AUDIO_MODEL_PATH, audio_model_size)
 
     # ------------------ MODELLE LADEN ------------------
     def _load_image_model(self, path):
         """BLIP-Modell laden (lokal oder aus dem Netz)."""
-        if exists(join(path, "config.json")):
+        print(f"Image model at: {path}")
+        if exists( path / "models--Salesforce--blip-image-captioning-base/snapshots/82a37760796d32b1411fe092ab5d4e227313294b/config.json"):
             try:
+                path = path / ('models--Salesforce--blip-image-captioning-base/snapshots'
+                               '/82a37760796d32b1411fe092ab5d4e227313294b')
                 print("Lade Bild-Erkennungsmodell von lokal:", path)
                 self.image_processor = BlipProcessor.from_pretrained(path)
                 self.image_model = BlipForConditionalGeneration.from_pretrained(path)
@@ -74,11 +79,12 @@ class AITools:
             self.image_processor = None
             self.image_model = None
 
-    def _load_audio_model(self, audio_model_size="small"):
+    def _load_audio_model(self, path, audio_model_size="small"):
         """Whisper für Transkription laden."""
         print(f"Lade Whisper-Modell ({audio_model_size}) ...")
+
         self.audio_model = whisper.load_model(audio_model_size)
-        print(f"✅ Audioerkennung erfolgreich gespeichert in: HOME/.cache/whisper/{audio_model_size}.pt")
+        print(f"✅ Audioerkennung erfolgreich gespeichert in: $HOME/.cache/whisper/{audio_model_size}.pt")
 
     ###################################################################
     # ------------------ BILDER ------------------
@@ -114,7 +120,10 @@ class AITools:
         captions = []
         try:
             clip = VideoFileClip(video_path)
-            print(f"🎞 Analysiere Video: {video_path}")
+            folder = os.path.dirname(video_path)
+            relpath = os.path.relpath(video_path, folder)
+            print(f"🎞 Analysiere Video: {relpath}")
+
             duration = clip.duration
             times = np.arange(0, duration, interval)
             last_caption = ""

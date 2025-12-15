@@ -97,7 +97,7 @@ def _format_date(self, date_str):
 # Find date of a video file
 #############################################
 
-def _get_date_from_metadata(filepath):
+def _get_date_from_metadata(filepath, et_instance=None):
     """
     Versucht, das Erstellungsdatum aus den Metadaten der Datei zu extrahieren.
     Verwendet PyExifTool für beste Abdeckung.
@@ -114,11 +114,20 @@ def _get_date_from_metadata(filepath):
     except:
         fallback_date = None
 
-    if extension in FILE_TAGS:
+#    if extension in FILE_TAGS and et_instance:
+#        try:
+#            # Wir nutzen die bereits offene Instanz!
+#            # Hinweis: get_metadata erwartet oft eine Liste, bei einer Datei also [filepath]
+#            metadata_list = et_instance.get_metadata(filepath)
+#            # PyExifTool gibt eine Liste zurück, wir brauchen das erste Element (Dictionary)
+#            metadata = metadata_list[0] if metadata_list else {}
+
+
+    if extension in FILE_TAGS and et_instance:
         try:
             # Verwende PyExifTool (erfordert ExifTool-Installation)
-            with exiftool.ExifTool() as et:
-                metadata = et.get_metadata(filepath)
+            metadata_list = et_instance.get_metadata(filepath)
+            metadata = metadata_list[0] if metadata_list else {}
 
             # Gehe die priorisierten Tags für diesen Dateityp durch
             for tag in FILE_TAGS[extension]:
@@ -189,7 +198,7 @@ def get_kind_of_media(path) -> str:
 ############################################################
 # Extract the meta data from all type of media files
 ############################################################
-def get_meta_data(path: str) -> Dict[str, Any]:
+def get_meta_data(path: str, et_instance: object = None) -> Dict[str, Any]:
     res = { "Date": "", "Address": "", "Lat": "", "Lon": "", "Length": ""}
     kind = get_kind_of_media(path)
     if kind == "image":
@@ -199,7 +208,7 @@ def get_meta_data(path: str) -> Dict[str, Any]:
     elif kind == "audio":
         # ... (der Fallback-Block ist hier nicht relevant, da er in _get_date_from_metadata liegt)
         print(f"get_meta_data: {path}")
-        dt_obj = _get_date_from_metadata(path)
+        dt_obj = _get_date_from_metadata(path, et_instance=et_instance)
         # Sicherstellen, dass das Datum immer im Zielformat (String) gespeichert wird
         if isinstance(dt_obj, datetime):
             res["Date"] = dt_obj.strftime(DATE_FORMAT_STR)
