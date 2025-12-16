@@ -324,114 +324,72 @@ class MediaAnalyzerGUI:
     ###########################################
     # Zeigt Tooltips von Image und Audio Description.
     ###########################################
-    def show_text_tooltip(self, text, x, y, max_width_px=600, max_height_px=500, padding=12):
-        """
-        Zeigt einen scrollbaren, automatisch umgebrochenen Text-Tooltip an Position (x,y).
-        Die Breite ist begrenzt durch max_width_px; die Höhe passt sich an den Textumfang an,
-        aber nicht größer als max_height_px.
-        """
-        # Falls bereits ein Text-Tooltip existiert, aktualisiere nur Inhalt & Größe
-        if getattr(self, "text_tooltip_window", None):
-            try:
-                ta = self.text_tooltip_window_text
-                ta.config(state="normal")
-                ta.delete("1.0", "end")
-                ta.insert("1.0", text)
-                ta.config(state="disabled")
-                # Recompute size and reposition
-                self._adjust_tooltip_size(text, max_width_px, max_height_px, padding)
-                self.text_tooltip_window.geometry(f"+{x}+{y}")
-                return
-            except Exception:
-                try:
-                    self.text_tooltip_window.destroy()
-                except:
-                    pass
-                self.text_tooltip_window = None
+    def show_text_tooltip(self, text, x, y, max_width_px=600, max_height_px=400):
+        if not text.strip():
+            return
 
-        # Neues Toplevel erstellen
+        self.hide_text_tooltip()
+
         win = Toplevel(self.root)
-        win.wm_overrideredirect(True)  # kein Titlebar
-        # Frame mit Text + Scrollbar
-        frame = Frame(win, bd=1, relief="solid")
+        win.wm_overrideredirect(True)
+        win.attributes("-topmost", True)
+
+        frame = Frame(win, bd=1, relief="solid", bg="white")
         frame.pack(fill="both", expand=True)
 
         vsb = Scrollbar(frame, orient="vertical")
         vsb.pack(side="right", fill="y")
 
-        # Text-Widget mit word wrap
-        ta = Text(frame, wrap="word", yscrollcommand=vsb.set, padx=8, pady=6, bd=0)
-        ta.insert("1.0", text)
-        ta.config(state="disabled")
-        ta.pack(fill="both", expand=True)
+        ta = Text(
+            frame,
+            wrap="word",
+            yscrollcommand=vsb.set,
+            padx=8,
+            pady=6,
+            bd=0,
+            width=1,  # WICHTIG: minimale Startbreite
+            height=1,
+            bg="white"
+        )
+        ta.pack(side="left", fill="both", expand=True)
         vsb.config(command=ta.yview)
 
-        # Speichere Referenzen für spätere Updates
+        ta.insert("1.0", text)
+        ta.config(state="disabled")
+
         self.text_tooltip_window = win
         self.text_tooltip_window_text = ta
 
-        # Größe berechnen und setzen
-        self._adjust_tooltip_size(text, max_width_px, max_height_px, padding)
+        # Jetzt erst Layout berechnen lassen
+        win.update_idletasks()
 
-        # Positioniere (achte darauf, nicht aus dem Bildschirm zu ragen)
-        # einfache Positionierung; caller kann X/Y anpassen falls nötig
+        self._adjust_tooltip_size(max_width_px, max_height_px)
+
         win.geometry(f"+{x}+{y}")
 
     ###########################################
     # Berechnet die Größe des Tooltips
     ###########################################
-    def _adjust_tooltip_size(self, text, max_width_px, max_height_px, padding):
-        """
-        Berechnet geeignete Pixel-Abmessungen für das Tooltip-Fenster basierend
-        auf Textlänge und Fenster-Maxima, und setzt die Geometry.
-        """
+    def _adjust_tooltip_size(self, max_width_px, max_height_px):
         win = self.text_tooltip_window
         ta = self.text_tooltip_window_text
 
-        # --- Schritt 1: Temporäre Breite setzen und Umbruch erzwingen ---
-        # Setze die Breite des Text-Widgets in Zeichen auf einen hohen Wert (z.B. 1000),
-        # damit es sich auf die maximale Pixelbreite (max_width_px) des Toplevel ausdehnt.
-        # Wichtig: Die Breite in Zeichen muss auf 0 gesetzt werden,
-        # damit das Widget die Breite des Fensters übernimmt, das wir gleich setzen.
-        ta.config(width=0)
+        font = tkfont.Font(font=ta.cget("font"))
+        line_height = font.metrics("linespace")
 
-        # Setze die vorläufige Breite des Toplevel, um den Umbruch zu steuern
+        # Maximale Breite setzen → erzwingt Wortumbruch
+        ta.config(width=1)
         win.geometry(f"{max_width_px}x{max_height_px}")
         win.update_idletasks()
 
-        # --- Schritt 2: Tatsächliche Zeilenanzahl ermitteln ---
-        try:
-            # Holen der Zeilennummer des letzten Zeichens ('end-1c')
-            # Format ist "Zeile.ZeichenIndex". Wir brauchen die Zeilennummer (Index 0).
-            line_index_str = ta.index('end-1c')
-            actual_lines = int(line_index_str.split('.')[0])
-        except ValueError:
-            # Fallback, falls der Text leer ist oder der Index nicht funktioniert
-            actual_lines = 1
+        # Zeilenanzahl ermitteln
+        last_index = ta.index("end-1c")
+        total_lines = int(last_index.split(".")[0])
 
-        # --- Schritt 3: Berechnung der notwendigen Höhe ---
+        needed_height = total_lines * line_height + 20
+        final_height = min(needed_height, max_height_px)
 
-        # Schriftart-Metriken abrufen
-        font = tkfont.Font(font=ta.cget('font'))
-        line_height = font.metrics('linespace')  # Höhe einer Zeile in Pixeln
-
-        # Feste Offsets für Padding (pady=6), Frame Border (bd=1) und Toplevel Rahmen
-        # (6 * 2 Text-Widget-Paddings + 1 * 2 Frame-Border)
-        fixed_y_offset = 14
-
-        needed_height = (actual_lines * line_height) + fixed_y_offset
-
-        # --- Schritt 4: Finale Größe setzen ---
-        final_height = min(int(needed_height), max_height_px)
-
-        # Die tatsächliche Breite des Text-Widgets nach dem Umbruch
-        final_width = ta.winfo_width() + 10  # kleiner Puffer hinzufügen
-
-        # Begrenze die Breite auf das Maximum
-        final_width = min(final_width, max_width_px)
-
-        # Setze die finale Geometry
-        win.geometry(f"{final_width}x{final_height}")
+        win.geometry(f"{max_width_px}x{final_height}")
 
     def hide_text_tooltip(self):
         """Versteckt den Text-Tooltip falls vorhanden."""
