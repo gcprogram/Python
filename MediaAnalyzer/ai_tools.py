@@ -57,7 +57,7 @@ class AITools:
                 print("Lade Bild-Erkennungsmodell von lokal:", path)
                 self.image_processor = BlipProcessor.from_pretrained(path)
                 self.image_model = BlipForConditionalGeneration.from_pretrained(path)
-                print("✅ Bilderkennung erfolgreich lokal geladen.")
+                print("✅ Bild-Erkennung erfolgreich lokal geladen.")
                 return
             except Exception:
                 # 🚨 GEÄNDERT: Behandelt unvollständiges Modell ohne Netz
@@ -72,10 +72,10 @@ class AITools:
 
         # 🚨 Hinzugefügt: Online-Versuch nur mit Netz
         try:
-            print(f"Lade Bilderkennungsmodell ({self.IMAGE_MODEL_NAME}) herunter – das kann dauern...")
+            print(f"⬇️ Lade Bild-Erkennungsmodell ({self.IMAGE_MODEL_NAME}) herunter – das kann dauern...")
             self.image_processor = BlipProcessor.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
             self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
-            print("✅ Bilderkennung erfolgreich gespeichert in:", path)
+            print("✅ Bild-Erkennung erfolgreich gespeichert in:", path)
         except Exception as e:
             print(
                 f"❌ FEHLER: Konnte BLIP-Modell nicht herunterladen. Ist eine Netzwerkverbindung vorhanden? Fehler: {e}")
@@ -118,17 +118,15 @@ class AITools:
         model_filename = f"{audio_model_size}.pt"
         model_path = os.path.join(cache_dir, model_filename)
 
-        print(f"Lade Whisper-Modell ({audio_model_size}) ...")
-
         if os.path.exists(model_path):
-            print(f"🔁 Lokales Modell gefunden: {model_path}")
+            print(f"🔁 Audio-Erkennungsmodell lokal gefunden: {model_path}")
             self.audio_model = whisper.load_model(model_path)
         else:
-            print("⬇️  Lokales Modell nicht gefunden – Download wird durchgeführt …")
+            print("⬇️  Audio-Erkennungsmodell nicht gefunden – Download wird durchgeführt …")
             self.audio_model = whisper.load_model(audio_model_size)
-            print(f"💾 Modell gespeichert unter: {model_path}")
+            print(f"💾 Audio Modell gespeichert unter: {model_path}")
 
-        print("✅ Audioerkennung erfolgreich initialisiert")
+        print("✅ Audio Transkribierung erfolgreich initialisiert")
 
     ###################################################################
     # ------------------ BILDER ------------------
@@ -138,7 +136,7 @@ class AITools:
     def describe_image(self, image_or_path):
         """Generiert eine Bildunterschrift für ein einzelnes Bild."""
         if self.image_model is None or self.image_processor is None:
-            raise RuntimeError("Das BLIP-Modell ist nicht initialisiert.")
+            raise RuntimeError("❌ FEHLER: Das BLIP-Modell ist nicht initialisiert.")
 
         # Prüfen, ob die Eingabe ein PIL.Image-Objekt ist
         if not isinstance(image_or_path, Image.Image):
@@ -151,9 +149,9 @@ class AITools:
             caption = self.image_processor.decode(out[0], skip_special_tokens=True)
             return caption.capitalize()
         except FileNotFoundError:
-            return f"Fehler: Bilddatei nicht gefunden unter {image_or_path}"
+            return f"⚠️ Fehler: Bilddatei nicht gefunden unter {image_or_path}"
         except Exception as e:
-            return f"Fehler bei der Generierung der Unterschrift: {e}"
+            return f"⚠️ Fehler bei der Generierung der Bildbeschreibung: {e}"
 
     ###################################################################
     # ------------------ VIDEOS ------------------
