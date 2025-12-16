@@ -25,12 +25,14 @@ class MediaAnalyzerGUI:
         # Cache für Thumbnail-Pfade
         self._last_thumb_path = None
         self._last_thumb_image = None
+        self._model_loading = False
         self.folder = None
         self.create_menu()
         self.create_top_controls()
         self.create_table()
 
         self.aitools = None
+        self.aitools = AITools(audio_model_size="large-v3")
         self.current_folder = None
 
     # ---------------- Menü ----------------
@@ -104,13 +106,15 @@ class MediaAnalyzerGUI:
 
         # --- Zeile 1: Transkriptionsmodell ---
         Label(config_frame, text="🎙 Transkriptionsmodell:", font=("Arial", 11)).grid(row=0, column=0, sticky=W, padx=5)
-        self.model_var = StringVar(value="small")
+        self.model_var = StringVar(value="large-v3")
         self.model_menu = ttk.Combobox(
             config_frame,
             textvariable=self.model_var,
             values=["tiny", "base", "small", "medium", "large-v3"],
             state="readonly", width=10
         )
+        self.model_menu.bind("<<ComboboxSelected>>", self.on_whisper_model_change)
+
         self.model_menu.grid(row=0, column=1, sticky=W, padx=5)
         self.save_transcript_var = IntVar(value=1) # standardmäßig aktiviert
         Checkbutton(config_frame, text="Transkripte speichern", variable=self.save_transcript_var).grid(row=0, column=2, sticky=W)
@@ -173,6 +177,56 @@ class MediaAnalyzerGUI:
         # Make the tree expand when window is resized
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
+
+    def on_whisper_model_change(self, event=None):
+        """
+        Wird aufgerufen, wenn ein anderes Whisper-Modell ausgewählt wird.
+        Lädt das Modell im Hintergrund.
+        """
+        if self._model_loading:
+            return  # Mehrfachklicks ignorieren
+
+        whisper_choice: str = self.model_var.get()
+        self._model_loading = True
+
+        self.status_label.config(
+            text=f"🎙 Lade Whisper-Modell '{whisper_choice}' …"
+        )
+        self.progress.config(mode="indeterminate")
+        self.progress.start(10)
+        self.root.update_idletasks()
+
+        def _load_model():
+            try:
+                self.aitools = AITools(audio_model_size=whisper_choice)
+            except Exception as e:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Fehler",
+                        f"Whisper-Modell konnte nicht geladen werden:\n{e}"
+                    )
+                )
+            finally:
+                self.root.after(0, self._on_whisper_model_loaded)
+
+        threading.Thread(
+            target=_load_model,
+            daemon=True,
+            name="WhisperModelSwitch"
+        ).start()
+
+    def _on_whisper_model_loaded(self):
+        self.progress.stop()
+        self.progress.config(mode="determinate")
+        self.progress["value"] = 0
+
+        model_name = self.model_var.get()
+        self.status_label.config(
+            text=f"✅ Whisper '{model_name}' bereit"
+        )
+
+        self._model_loading = False
 
     # ---- Thumbnail Hover ----
     def on_hover(self, event):
@@ -505,8 +559,15 @@ class MediaAnalyzerGUI:
         self.root.update_idletasks()
         self.tree.delete(*self.tree.get_children())
 
-        whisper_choice:str = self.model_var.get()
-        self.aitools = AITools(audio_model_size=whisper_choice)
+#        whisper_choice:str = self.model_var.get()
+#        self.aitools = AITools(audio_model_size=whisper_choice)
+        if self._model_loading:
+            messagebox.showwarning(
+                "Bitte warten",
+                "Das Audio-Modell wird noch geladen."
+            )
+            return
+
         interval = int(self.interval_var.get())
 
         records = []
@@ -590,8 +651,10 @@ class MediaAnalyzerGUI:
                 end_time = time.time()
                # Zeitdifferenz berechnen
                 elapsed_time = end_time - start_time
-                print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden.")
-
+                if rec["Length"] == "":
+                    print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden.")
+                else:
+                    print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden (Dauer: {rec['Length']}).")
 
         df = pd.DataFrame(records)
         out_path = os.path.join(folder, "_media_analysis.csv")

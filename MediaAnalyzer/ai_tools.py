@@ -3,10 +3,10 @@ from os.path import exists, join
 from pathlib import Path
 import numpy as np
 import whisper
+import threading
 from PIL import Image
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from transformers import BlipProcessor, BlipForConditionalGeneration
-
 from media_tools import format_time2mmss
 
 """
@@ -37,11 +37,14 @@ class AITools:
         self.image_model = None
         # Whisper
         self.audio_model = None
+        self._model_ready = threading.Event()
+        self._model_error = None
+
         self.audio_model_size = audio_model_size
 
         blip_path = image_model_path if image_model_path is not None else self.DEFAULT_IMAGE_MODEL_PATH
         self._load_image_model(blip_path)
-        self._load_audio_model(self.AUDIO_MODEL_PATH, audio_model_size)
+        self._load_audio_model(audio_model_size)
 
     # ------------------ MODELLE LADEN ------------------
     def _load_image_model(self, path):
@@ -79,12 +82,53 @@ class AITools:
             self.image_processor = None
             self.image_model = None
 
-    def _load_audio_model(self, path, audio_model_size="small"):
-        """Whisper für Transkription laden."""
+    def preload_audio_model(self, audio_model_size="small"):
+        """
+        Startet das Laden des Whisper-Modells im Hintergrund.
+        """
+
+        def _load():
+            try:
+                self._load_audio_model(audio_model_size)
+            except Exception as exc:
+                self._model_error = exc
+            finally:
+                self._model_ready.set()
+
+        thread = threading.Thread(
+            target=_load,
+            name="WhisperModelLoader",
+            daemon=True
+        )
+        thread.start()
+
+    def _load_audio_model(self, audio_model_size="small"):
+        """
+        Whisper für Transkription laden.
+        Nutzt lokales Modell, falls vorhanden, sonst Download.
+        """
+
+        # Standard-Whisper-Cachepfad
+        cache_dir = os.path.join(
+            Path.home(),
+            ".cache",
+            "whisper"
+        )
+
+        model_filename = f"{audio_model_size}.pt"
+        model_path = os.path.join(cache_dir, model_filename)
+
         print(f"Lade Whisper-Modell ({audio_model_size}) ...")
 
-        self.audio_model = whisper.load_model(audio_model_size)
-        print(f"✅ Audioerkennung erfolgreich gespeichert in: $HOME/.cache/whisper/{audio_model_size}.pt")
+        if os.path.exists(model_path):
+            print(f"🔁 Lokales Modell gefunden: {model_path}")
+            self.audio_model = whisper.load_model(model_path)
+        else:
+            print("⬇️  Lokales Modell nicht gefunden – Download wird durchgeführt …")
+            self.audio_model = whisper.load_model(audio_model_size)
+            print(f"💾 Modell gespeichert unter: {model_path}")
+
+        print("✅ Audioerkennung erfolgreich initialisiert")
 
     ###################################################################
     # ------------------ BILDER ------------------
