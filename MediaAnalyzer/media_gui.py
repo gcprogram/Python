@@ -290,6 +290,12 @@ class MediaAnalyzerGUI:
                 self.show_image_thumbnail(path, event.x_root, event.y_root)
             elif filename.lower().endswith((".mp4", ".mov", ".avi")):
                 self.show_video_thumbnail(path, event.x_root, event.y_root)
+            elif filename.lower().endswith((".mp3", ".wav", ".m4a", ".flac")):
+                cover = extract_mp3_front_cover(path)
+                if cover:
+                    self.show_image_thumbnail(cover, event.x_root, event.y_root)
+                else:
+                    self.hide_thumbnail()
             else:
                 self.hide_thumbnail()
             return
@@ -613,8 +619,7 @@ class MediaAnalyzerGUI:
 
                     # Nur audio_text im Hintergrund erzeugen
                     if kind in ("video", "audio"):
-                        self.transcripts_missing -= 1
-                        #self.root.after(0, self._update_progress)
+                        self.transcripts_missing += 1
                         transcripts_cnt += 1
                         self._run_ai_analysis(path, kind, item_id, image_text)
 
@@ -639,9 +644,6 @@ class MediaAnalyzerGUI:
 
         self.progress["maximum"] = transcripts_cnt
         self.progress["value"] = 0
-        while self.transcripts_missing > 0:
-            self.wait_for_a_gui(lambda value: self.set_process(transcripts_cnt - value))
-
         df = pd.DataFrame(records)
         out_path = os.path.join(folder, "_media_analysis.csv")
         df.to_csv(out_path, sep=";", index=False, encoding="utf-8-sig")
@@ -698,7 +700,6 @@ class MediaAnalyzerGUI:
 
             except Exception as e:
                 audio_text = f"⚠️ Fehler: {e}"
-
             finally:
                 self.root.after(
                     0,
@@ -706,7 +707,19 @@ class MediaAnalyzerGUI:
                     item_id,
                     audio_text
                 )
+                self.transcripts_missing -= 1  # ✅ hierhin
                 self.audio_queue.task_done()
+
+    def _update_tree_ai_columns(self, item_id, audio_text):
+        values = list(self.tree.item(item_id, "values"))
+        values[8] = audio_text
+        self.tree.item(item_id, values=values)
+
+        # Fortschritt
+        self.progress["value"] += 1
+
+        if self.progress["value"] >= self.progress["maximum"]:
+            self.status_label.config(text="✅ Audio-Transkription abgeschlossen")
 
     #
     # Push jedes Audio und Video in die Queue.
