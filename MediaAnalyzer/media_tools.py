@@ -478,7 +478,33 @@ def reverse_geocode(lat, lon):
         return ""
     return ""
 
-def extract_mp3_front_cover(mp3_path: str) -> Image.Image | None:
+
+def extract_mp3_front_cover(mp3_path):
+    try:
+        tags = ID3(mp3_path)
+    except Exception:
+        return None
+
+    front = None
+    fallback = None
+    for tag in tags.values():
+        if isinstance(tag, APIC):
+            if tag.type == 3:
+                front = tag
+                break
+            fallback = fallback or tag
+
+    tag = front or fallback
+    if not tag:
+        return None
+
+    try:
+        return Image.open(io.BytesIO(tag.data))
+    except Exception:
+        return None
+
+
+def extract_mp3_front_cover2(mp3_path: str) -> Image.Image | None:
     try:
         tags = ID3(mp3_path)
     except Exception:
