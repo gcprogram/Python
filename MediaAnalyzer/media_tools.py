@@ -4,6 +4,7 @@ import subprocess
 import json
 import re
 import os
+import io
 from datetime import datetime
 from dateutil import parser
 from geopy import Nominatim
@@ -18,6 +19,7 @@ import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
 from mutagen import File
 from mutagen.wave import WAVE
 from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC
 
 MEDIA_EXT = {
     ".jpg": "image", ".jpeg": "image", ".png": "image",
@@ -475,3 +477,28 @@ def reverse_geocode(lat, lon):
     except Exception:
         return ""
     return ""
+
+def extract_mp3_front_cover(mp3_path: str) -> Image.Image | None:
+    try:
+        tags = ID3(mp3_path)
+    except Exception:
+        return None
+
+    front = None
+    fallback = None
+
+    for tag in tags.values():
+        if isinstance(tag, APIC):
+            if tag.type == 3:  # Front Cover
+                front = tag
+                break
+            fallback = fallback or tag
+
+    tag = front or fallback
+    if not tag:
+        return None
+
+    try:
+        return Image.open(io.BytesIO(tag.data))
+    except Exception:
+        return None
