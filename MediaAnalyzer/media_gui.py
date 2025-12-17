@@ -1,5 +1,6 @@
 import os
 import threading
+import queue
 import time
 import pandas as pd
 from tkinter import (
@@ -13,7 +14,8 @@ from PIL import Image, ImageTk, ExifTags
 import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
 
 from ai_tools import AITools
-from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media, format_time2mmss
+from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media, format_time2mmss, \
+    extract_mp3_front_cover
 import subprocess
 from moviepy.video.io.VideoFileClip import VideoFileClip
 
@@ -34,8 +36,14 @@ class MediaAnalyzerGUI:
         self.aitools = None
         self.aitools = AITools(audio_model_size="large-v3")
         self.current_folder = None
-
+        self.transcripts_missing = 0 # number of audio transcriptions still not processed.
+        self.audio_queue = queue.Queue()
+        self.audio_workers = []
+        self.MAX_AUDIO_WORKERS = 1  # <-- sehr wichtig
+        self.start_audio_workers()  # Startet den Thread zur Verarbeitung von Audios/Videos
+    #
     # ---------------- Menü ----------------
+    #
     def create_menu(self):
         menubar = Menu(self.root)
         filemenu = Menu(menubar, tearoff=0)
@@ -403,7 +411,6 @@ class MediaAnalyzerGUI:
 
     def show_video_thumbnail(self, path, x, y):
         try:
-            print("path=", path)
             clip = VideoFileClip(path)
             mid = clip.duration / 2
             frame = clip.get_frame(mid)  # numpy array
@@ -482,6 +489,8 @@ class MediaAnalyzerGUI:
                 print("masOS, Linux Playback not implemented yet")
                 #subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", path])
 
+    def set_process(self, value):
+        self.progress["value"] = value
 
     # ---- Tabellen-Sortierung ----
     def sort_column(self, col, reverse):
@@ -512,6 +521,9 @@ class MediaAnalyzerGUI:
             self.current_folder = self.folder
             threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
 
+    #
+    # Hauptroutine liest files vom file_path und füllt die Tabelle.
+    #
     def analyze_folder(self, file_path):
         self.status_label.config(text="📦 Lade KI-Modelle...")
         self.root.update_idletasks()
@@ -552,6 +564,8 @@ class MediaAnalyzerGUI:
 
         with exiftool.ExifToolHelper() as et:
 
+            self.transcripts_missing = 0
+            transcripts_cnt = 0
             for i, path in enumerate(tqdm(all_files, desc="Analysiere")):
                 # Startzeit
                 start_time = time.time()
@@ -570,61 +584,154 @@ class MediaAnalyzerGUI:
                     rec["Lat"] = meta.get("Lat", "")
                     rec["Lon"] = meta.get("Lon", "")
                     rec["Length"] = meta.get("Length", "")
+
+                    # Mache Image Beschreibung sofort
                     if kind == "image":
                         image_text = self.aitools.describe_image(path)
+                        audio_text = ""
                     elif kind == "video":
+                        # Das ist aufwendiger: Video zerlegen in Einzelbilder, alle %interval%s Sekunden.
                         image_text = self.aitools.describe_video_by_frames(path, interval)
-                        audio_text = self.aitools.transcribe_audio(path)
+                        audio_text = "..."
                         if self.save_frames_var.get():
                             self._save_video_frames(path, interval)
                     elif kind == "audio":
-                        audio_text = self.aitools.transcribe_audio(path)
+                        audio_text = "..."
+                        print("Versuche Bild aus Audio zu extrahieren")
+                        image = extract_mp3_front_cover(path)
+                        if image is None:
+                            print(f"{relpath} has no image")
+                            image_text = ""
+                        else:
+                            image_text = self.aitools.describe_image(image)
+                            print(f"Cover-Bild zeigt: {image_text}")
+                            # MP3 Cover Image extrahieren und beschreiben.
 
-                    rec["Audio"] = audio_text
                     rec["Image"] = image_text
-                    text = ""
-                    # Saved transcript contains Audio+Image Content
-                    if self.save_transcript_var.get():
-                        if audio_text != "" and image_text != "":
-                            text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
-                        elif kind == "audio" or "video":
-                            text = "\"" + audio_text + "\"\n\n " + image_text.translate(str.maketrans("|", '\n'))
+                    rec["Audio"] = audio_text
+                    item_id = self.tree.insert("", "end", values=tuple(rec.values()))
 
-                        textfile = f"{path}.txt"
-                        if kind != 'image' and text != "":
-                            with open(textfile, "w", encoding="utf-8") as f:
-                                f.write(text)
+                    # Nur audio_text im Hintergrund erzeugen
+                    if kind in ("video", "audio"):
+                        self.transcripts_missing -= 1
+                        #self.root.after(0, self._update_progress)
+                        transcripts_cnt += 1
+                        self._run_ai_analysis(path, kind, item_id, image_text)
+
 
                 except Exception as e:
                     print("⚠️ Fehler bei:", path, e)
 
                 records.append(rec)
-                self.tree.insert("", "end", values=tuple(rec.values()))
                 self.progress["value"] = i + 1
                 self.root.update_idletasks()
-                if total == 1:
+                if total == 1:   # only show this window in single file mode
                     text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
                     self.show_result_window(file_path, kind, text)
                 # Endzeit
-                end_time = time.time()
-               # Zeitdifferenz berechnen
-                elapsed_time = end_time - start_time
-                if rec["Length"] == "":
-                    print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden.")
-                else:
-                    print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden (Dauer: {rec['Length']}).")
+#                end_time = time.time()
+#               # Zeitdifferenz berechnen
+#                elapsed_time = end_time - start_time
+#               if rec["Length"] == "":
+#                   print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden.")
+#               else:
+#                   print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden (Audio-Dauer: {rec['Length']}).")
+
+        self.progress["maximum"] = transcripts_cnt
+        self.progress["value"] = 0
+        while self.transcripts_missing > 0:
+            self.wait_for_a_gui(lambda value: self.set_process(transcripts_cnt - value))
 
         df = pd.DataFrame(records)
         out_path = os.path.join(folder, "_media_analysis.csv")
         df.to_csv(out_path, sep=";", index=False, encoding="utf-8-sig")
         out_file = os.path.basename(out_path)
         self.status_label.config(text=f"✅ Fertig → {out_file}")
-
-        messagebox.showinfo("Fertig", f"Analyse abgeschlossen.\nDatei gespeichert unter:\n{out_path}")
+        relpath = os.path.relpath(out_path, folder)
+        messagebox.showinfo("Fertig", f"✅ Analyse abgeschlossen.\nDaten gespeichert unter:\n{relpath}")
 
     # ---------------- Single File Mode ----------------
     def analyze_single_file(self, file_path):
         self.analyze_folder(file_path)
+
+    # Wartet bis transcripts_missing ändert
+    def wait_for_a_gui(self, callback, poll_ms=1000):
+        def _check():
+            if self.transcripts_missing is not None:
+                callback(self.transcripts_missing)
+            else:
+                self.root.after(poll_ms, _check)
+        _check()
+
+    #
+    # Startet einen Thread um Audio Transkription zu machen
+    #
+    def start_audio_workers(self):
+        for _ in range(self.MAX_AUDIO_WORKERS):
+            t = threading.Thread(
+                target=self._audio_worker_loop,
+                daemon=True,
+                name="AudioWorker"
+            )
+            t.start()
+            self.audio_workers.append(t)
+
+    #
+    # Macht die eigentliche Transkription
+    #
+    def _audio_worker_loop(self):
+        while True:
+            job = self.audio_queue.get()
+            if job is None:
+                break  # sauberer Shutdown
+
+            path, kind, item_id, image_text = job
+
+            audio_text = ""
+            try:
+                audio_text = self.aitools.transcribe_audio(path)
+
+                if self.save_transcript_var.get():
+                    text = f"\"{audio_text}\"\n\n{image_text.translate(str.maketrans('|', '\n'))}"
+                    with open(f"{path}.txt", "w", encoding="utf-8") as f:
+                        f.write(text)
+
+            except Exception as e:
+                audio_text = f"⚠️ Fehler: {e}"
+
+            finally:
+                self.root.after(
+                    0,
+                    self._update_tree_ai_columns,
+                    item_id,
+                    audio_text
+                )
+                self.audio_queue.task_done()
+
+    #
+    # Push jedes Audio und Video in die Queue.
+    #
+    def _run_ai_analysis(self, path, kind, item_id, image_text):
+        if kind not in ("audio", "video"):
+            return
+
+        self.audio_queue.put(
+            (path, kind, item_id, image_text)
+        )
+
+    #
+    # AI Ergebnisse eintragen.
+    #
+    def _update_tree_ai_columns(self, item_id, audio_text):
+        values = list(self.tree.item(item_id, "values"))
+
+        # Spaltenindex:
+        # 0 File | 1 Type | 2 Date | 3 Lat | 4 Lon | 5 Length | 6 Address | 7 Image | 8 Audio
+        if audio_text:
+            values[8] = audio_text
+
+        self.tree.item(item_id, values=values)
+
 
     def show_result_window(self, file_path, kind, result_text):
         win = Toplevel(self.root)
