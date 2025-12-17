@@ -49,12 +49,11 @@ class AITools:
     # ------------------ MODELLE LADEN ------------------
     def _load_image_model(self, path):
         """BLIP-Modell laden (lokal oder aus dem Netz)."""
-        print(f"Image model at: {path}")
         if exists( path / "models--Salesforce--blip-image-captioning-base/snapshots/82a37760796d32b1411fe092ab5d4e227313294b/config.json"):
             try:
                 path = path / ('models--Salesforce--blip-image-captioning-base/snapshots'
                                '/82a37760796d32b1411fe092ab5d4e227313294b')
-                print("Lade Bild-Erkennungsmodell von lokal:", path)
+                print("🔁 Lade Bild-Erkennungsmodell von lokal.")
                 self.image_processor = BlipProcessor.from_pretrained(path)
                 self.image_model = BlipForConditionalGeneration.from_pretrained(path)
                 print("✅ Bild-Erkennung erfolgreich lokal geladen.")
@@ -72,7 +71,7 @@ class AITools:
 
         # 🚨 Hinzugefügt: Online-Versuch nur mit Netz
         try:
-            print(f"⬇️ Lade Bild-Erkennungsmodell ({self.IMAGE_MODEL_NAME}) herunter – das kann dauern...")
+            print(f"⬇️ Download Bild-Erkennungsmodell ({self.IMAGE_MODEL_NAME}) – das kann dauern...")
             self.image_processor = BlipProcessor.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
             self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
             print("✅ Bild-Erkennung erfolgreich gespeichert in:", path)
