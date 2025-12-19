@@ -685,14 +685,15 @@ class MediaAnalyzerGUI:
         while True:
             job = self.audio_queue.get()
             if job is None:
+                print("_audio_worker_loop(): No audio work to do")
                 break  # sauberer Shutdown
 
             path, kind, item_id, image_text = job
-
             audio_text = ""
             try:
-                audio_text = self.aitools.transcribe_audio(path)
 
+                audio_text = self.aitools.transcribe_audio(path)
+                print("_audio_worker_loop() end:\n{audio_text}")
                 if self.save_transcript_var.get():
                     text = f"\"{audio_text}\"\n\n{image_text.translate(str.maketrans('|', '\n'))}"
                     with open(f"{path}.txt", "w", encoding="utf-8") as f:

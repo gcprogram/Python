@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import whisper
 import threading
+import torch
 from PIL import Image
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from transformers import BlipProcessor, BlipForConditionalGeneration
@@ -32,6 +33,9 @@ class AITools:
     AUDIO_MODEL_PATH = Path.home() / ".cache/whisper/"
 
     def __init__(self, image_model_path=None, audio_model_size="small"):
+        self.device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(self.device_str)
+
         # BLIP
         self.image_processor = None
         self.image_model = None
@@ -45,6 +49,7 @@ class AITools:
         blip_path = image_model_path if image_model_path is not None else self.DEFAULT_IMAGE_MODEL_PATH
         self._load_image_model(blip_path)
         self._load_audio_model(audio_model_size)
+        self.use_fp16 = (self.device_str == "cuda")
 
     # ------------------ MODELLE LADEN ------------------
     def _load_image_model(self, path):
@@ -55,7 +60,7 @@ class AITools:
                                '/82a37760796d32b1411fe092ab5d4e227313294b')
                 print("🔁 Lade Bild-Erkennungsmodell von lokal.")
                 self.image_processor = BlipProcessor.from_pretrained(path)
-                self.image_model = BlipForConditionalGeneration.from_pretrained(path)
+                self.image_model = BlipForConditionalGeneration.from_pretrained(path).to(self.device)
                 print("✅ Bild-Erkennung erfolgreich lokal geladen.")
                 return
             except Exception:
@@ -73,7 +78,7 @@ class AITools:
         try:
             print(f"⬇️ Download Bild-Erkennungsmodell ({self.IMAGE_MODEL_NAME}) – das kann dauern...")
             self.image_processor = BlipProcessor.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
-            self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
+            self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path).to(self.device)
             print("✅ Bild-Erkennung erfolgreich gespeichert in:", path)
         except Exception as e:
             print(
@@ -116,13 +121,13 @@ class AITools:
 
         model_filename = f"{audio_model_size}.pt"
         model_path = os.path.join(cache_dir, model_filename)
-
+        print(f"🎧 Audio-Erkennungsmodell benutzt {self.device_str.upper()}")
         if os.path.exists(model_path):
             print(f"🔁 Audio-Erkennungsmodell lokal gefunden: {model_path}")
-            self.audio_model = whisper.load_model(model_path)
+            self.audio_model = whisper.load_model(model_path,device=self.device)
         else:
             print("⬇️  Audio-Erkennungsmodell nicht gefunden – Download wird durchgeführt …")
-            self.audio_model = whisper.load_model(audio_model_size)
+            self.audio_model = whisper.load_model(audio_model_size, device=self.device)
             print(f"💾 Audio Modell gespeichert unter: {model_path}")
 
         print("✅ Audio Transkribierung erfolgreich initialisiert")
@@ -143,7 +148,7 @@ class AITools:
         else:
             image = image_or_path
         try:
-            inputs = self.image_processor(image, return_tensors="pt")
+            inputs = self.image_processor(image, return_tensors="pt").to(self.device)
             out = self.image_model.generate(**inputs, max_new_tokens=100)
             caption = self.image_processor.decode(out[0], skip_special_tokens=True)
             return caption.capitalize()
@@ -194,7 +199,7 @@ class AITools:
     ###################################################################
     def transcribe_audio(self, path):
         try:
-            result = self.audio_model.transcribe(audio=path, fp16=False)  # ignore model warning
+            result = self.audio_model.transcribe(audio=path, fp16=self.use_fp16)  # ignore model warning
             return result["text"].strip()
         except Exception as e:
             print("⚠️ Fehler beim Transcribe Audio:", e)
