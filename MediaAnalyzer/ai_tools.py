@@ -196,5 +196,6 @@ class AITools:
         try:
             result = self.audio_model.transcribe(audio=path, fp16=False)  # ignore model warning
             return result["text"].strip()
-        except Exception:
-            return ""
+        except Exception as e:
+            print("⚠️ Fehler beim Transcribe Audio:", e)
+            return "⚠️ Fehler"
