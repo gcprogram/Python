@@ -1,0 +1,15 @@
+This program analyses Photos, Videos, and Audio files using AI models for content description of Images, and transcripts for Audio contained.
+It also calculates addresses of the photo and video locations.
+
+The AI models used are all free of charge and offline downloaded on your computer.
+No personal data is sent to some AI provider. 
+
+For using the GPU power of your graphic card for the AI models, you may need to install torch, see below.
+The models are also usable on a standard CPU. Time for image/frame analysis is 1-2 sec on a Surface Pro 8.
+Time for audio transcripts of videos is approx. 1.5x the duration. Long videos may not work.
+
+
+pip uninstall torch torchvision torchaudio -y
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121   
+# maybe cu118 or cu123 works better on your PC. Torch may only work for NVIDIA graphic cards.
+
