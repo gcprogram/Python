@@ -32,7 +32,7 @@ class AITools:
     IMAGE_MODEL_NAME = "Salesforce/blip-image-captioning-base"
     AUDIO_MODEL_PATH = Path.home() / ".cache/whisper/"
 
-    def __init__(self, image_model_path=None, audio_model_size="small"):
+    def __init__(self, audio_model_size="large-v3"):
         self.device_str = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(self.device_str)
 
@@ -41,13 +41,10 @@ class AITools:
         self.image_model = None
         # Whisper
         self.audio_model = None
-        self._model_ready = threading.Event()
-        self._model_error = None
-
+        self.audio_model_ready = threading.Event()
+        self.audio_model_error = None
         self.audio_model_size = audio_model_size
-
-        blip_path = image_model_path if image_model_path is not None else self.DEFAULT_IMAGE_MODEL_PATH
-        self._load_image_model(blip_path)
+        self._load_image_model(self.DEFAULT_IMAGE_MODEL_PATH)
         self._load_audio_model(audio_model_size)
         self.use_fp16 = (self.device_str == "cuda")
 
@@ -65,10 +62,9 @@ class AITools:
                 return
             except Exception:
                 # 🚨 GEÄNDERT: Behandelt unvollständiges Modell ohne Netz
-                print("⚠️ SCHWERWIEGENDER FEHLER: Lokales Modell unvollständig oder beschädigt unter:", path)
+                print("⚠️ FATAL: Lokales Modell unvollständig oder beschädigt unter:", path)
                 print("   Da keine Netzwerkverbindung verfügbar ist oder eine Offline-Nutzung gewünscht wird,")
-                print(
-                    "   kann das BLIP-Modell nicht geladen werden. Bitte löschen Sie den Ordner und versuchen Sie es online erneut.")
+                print("   kann das BLIP-Modell nicht geladen werden. Bitte löschen Sie den Ordner und versuchen Sie es online erneut.")
                 # Setzt die Modelle auf None, was später in generate_caption einen RuntimeError auslösen würde
                 self.image_processor = None
                 self.image_model = None
@@ -86,7 +82,7 @@ class AITools:
             self.image_processor = None
             self.image_model = None
 
-    def preload_audio_model(self, audio_model_size="small"):
+    def preload_audio_model(self, audio_model_size="large-v3"):
         """
         Startet das Laden des Whisper-Modells im Hintergrund.
         """
@@ -95,9 +91,10 @@ class AITools:
             try:
                 self._load_audio_model(audio_model_size)
             except Exception as exc:
-                self._model_error = exc
+                self.audio_model_error = exc
+                self.audio_model = None
             finally:
-                self._model_ready.set()
+                self.audio_model_ready.set()
 
         thread = threading.Thread(
             target=_load,
@@ -106,41 +103,38 @@ class AITools:
         )
         thread.start()
 
-    def _load_audio_model(self, audio_model_size="small"):
+    #
+    # Lädt das Audio Modell (Whisper) in den Speicher
+    #
+    def _load_audio_model(self, audio_model_size):
         """
         Whisper für Transkription laden.
         Nutzt lokales Modell, falls vorhanden, sonst Download.
         """
-
         # Standard-Whisper-Cachepfad
-        cache_dir = os.path.join(
-            Path.home(),
-            ".cache",
-            "whisper"
-        )
+        if self.audio_model is None or self.audio_model_error is not None:
+            cache_dir = os.path.join( Path.home(), ".cache", "whisper")
+            model_filename = f"{audio_model_size}.pt"
+            model_path = os.path.join(cache_dir, model_filename)
+            print(f"🎧 Audio-Erkennungsmodell benutzt {self.device_str.upper()}")
+            if os.path.exists(model_path):
+                print(f"🔁 Audio-Erkennungsmodell lokal gefunden: {model_path}")
+                self.audio_model = whisper.load_model(model_path,device=self.device)
+            else:
+                print("⬇️  Audio-Erkennungsmodell nicht gefunden – Download wird durchgeführt …")
+                self.audio_model = whisper.load_model(audio_model_size, device=self.device)
+                print(f"💾 Audio Modell gespeichert unter: {model_path}")
 
-        model_filename = f"{audio_model_size}.pt"
-        model_path = os.path.join(cache_dir, model_filename)
-        print(f"🎧 Audio-Erkennungsmodell benutzt {self.device_str.upper()}")
-        if os.path.exists(model_path):
-            print(f"🔁 Audio-Erkennungsmodell lokal gefunden: {model_path}")
-            self.audio_model = whisper.load_model(model_path,device=self.device)
-        else:
-            print("⬇️  Audio-Erkennungsmodell nicht gefunden – Download wird durchgeführt …")
-            self.audio_model = whisper.load_model(audio_model_size, device=self.device)
-            print(f"💾 Audio Modell gespeichert unter: {model_path}")
-
-        print("✅ Audio Transkribierung erfolgreich initialisiert")
+            print("✅ Audio Transkribierung erfolgreich initialisiert")
 
     ###################################################################
-    # ------------------ BILDER ------------------
     # Describe the image with BLIP AI model
     # image_or_path is either an image of a filepath to an image.
     ###################################################################
     def describe_image(self, image_or_path):
         """Generiert eine Bildunterschrift für ein einzelnes Bild."""
         if self.image_model is None or self.image_processor is None:
-            raise RuntimeError("❌ FEHLER: Das BLIP-Modell ist nicht initialisiert.")
+            raise RuntimeError("❌ FATAL: Das BLIP-Modell ist nicht initialisiert.")
 
         # Prüfen, ob die Eingabe ein PIL.Image-Objekt ist
         if not isinstance(image_or_path, Image.Image):
@@ -153,33 +147,35 @@ class AITools:
             caption = self.image_processor.decode(out[0], skip_special_tokens=True)
             return caption.capitalize()
         except FileNotFoundError:
-            return f"⚠️ Fehler: Bilddatei nicht gefunden unter {image_or_path}"
+            return f"⚠️ ERROR: Bilddatei nicht gefunden unter {image_or_path}"
         except Exception as e:
-            return f"⚠️ Fehler bei der Generierung der Bildbeschreibung: {e}"
+            return f"⚠️ ERROR: bei der Generierung der Bildbeschreibung: {e}"
 
     ###################################################################
     # ------------------ VIDEOS ------------------
     # Describe Video by extracting frame images every interval seconds
     # and use describe_image on each interval frame.
     ###################################################################
-    def describe_video_by_frames(self, video_path, interval=10):
+    def describe_video_by_frames(self, video_path, interval=30):
         captions = []
         try:
             clip = VideoFileClip(video_path)
             folder = os.path.dirname(video_path)
             relpath = os.path.relpath(video_path, folder)
-            print(f"🎞 Analysiere Video: {relpath}")
 
             duration = clip.duration
+            fmt_dur_mm_ss = format_time2mmss(duration)
+            print(f"🎞 Analysiere Video: {relpath}, with {duration/interval:.0f} frames")
             times = np.arange(0, duration, interval)
             last_caption = ""
             for t in times:
                 try:
+                    fmt_mm_ss = format_time2mmss(t)
+                    print(f"  Frame {fmt_mm_ss}/{fmt_dur_mm_ss}")
                     frame = clip.get_frame(t)
                     image = Image.fromarray(frame)
                     caption = self.describe_image(image)
                     if caption != last_caption:
-                        fmt_mm_ss = format_time2mmss(t)
                         captions.append(f"{fmt_mm_ss} {caption}")
                     last_caption = caption
                 except Exception as e:
@@ -187,8 +183,8 @@ class AITools:
                     continue
             clip.close()
         except Exception as e:
-            print("⚠️ Fehler beim Lesen des Videos:", e)
-            return f"[Fehler beim Analysieren des Videos: {e}]"
+            print("⚠️ ERROR: Image description from Video frame:", e)
+            return f"⚠️ ERROR: Image description from Video frame"
 
         # Kombinieren
         summary = " | ".join(captions)
@@ -202,5 +198,5 @@ class AITools:
             result = self.audio_model.transcribe(audio=path, fp16=self.use_fp16)  # ignore model warning
             return result["text"].strip()
         except Exception as e:
-            print("⚠️ Fehler beim Transcribe Audio:", e)
-            return "⚠️ Fehler"
+            print(f"⚠️ ERROR in Transcribe Audio: {e}")
+            return "⚠️ ERROR in Transcribe Audio"
