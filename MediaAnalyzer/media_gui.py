@@ -1,8 +1,12 @@
 import os
+import csv
 import threading
 import queue
 import time
+from pathlib import Path
 import torch
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 import pandas as pd
 from tkinter import (
     Tk, Frame, Button, Label, filedialog, ttk, messagebox, Text,
@@ -14,13 +18,24 @@ from tqdm import tqdm
 from PIL import Image, ImageTk, ExifTags
 import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
 
+import media_tools
 from ai_tools import AITools
-from media_tools import _get_exif_data, _get_video_metadata, get_meta_data, get_kind_of_media, format_time2mmss, \
-    extract_mp3_front_cover
+from media_tools import _get_exif_data, _get_video_metadata, get_meta_data_bundle, get_kind_of_media, format_time2mmss, \
+    extract_mp3_front_cover, read_ai_metadata
 from moviepy.video.io.VideoFileClip import VideoFileClip
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+log = logging.getLogger(__name__)
 
 class MediaAnalyzerGUI:
     def __init__(self, root):
+        log.info("Starting Media Analyzer...")
         self.root = root
         self.root.title("🧭 Medien Analyse")
         self.root.geometry("1200x750")
@@ -28,13 +43,15 @@ class MediaAnalyzerGUI:
         self._last_thumb_path = None
         self._last_thumb_image = None
         self._model_loading = False
-        self.folder = None
+        self.folder:Path = None
         self.create_menu()
         self.create_top_controls()
         self.create_table()
         self._init_styles()
-        self.aitools = AITools()
-        self.current_folder = None
+        log.info("AI Models loading...")
+        self.aitools = AITools(audio_model_size=self.model_var.get())
+        log.info("AI Models loaded...")
+        self.current_folder:Path = None
         self.transcripts_missing = 0 # number of audio transcriptions still not processed.
         self.audio_queue = queue.Queue()
         self.audio_workers = []
@@ -45,6 +62,7 @@ class MediaAnalyzerGUI:
     # ---------------- Menü ----------------
     #
     def create_menu(self):
+        log.info("Menu creating...")
         menubar = Menu(self.root)
         filemenu = Menu(menubar, tearoff=0)
         filemenu.add_command(label="Bulk Load", command=self.choose_folder)
@@ -55,15 +73,16 @@ class MediaAnalyzerGUI:
         self.root.config(menu=menubar)
         # Hilfe-Menü
         helpmenu = Menu(menubar, tearoff=0)
-        helpmenu.add_command(label="Was ist das?", command=self.show_help_info)
+        helpmenu.add_command(label="What is this?", command=self.show_help_info)
         helpmenu.add_command(label="Info BLIP", command=self.show_help_blip)
         helpmenu.add_command(label="Info WHISPER", command=self.show_help_whisper)
         helpmenu.add_command(label="Info GPU", command=self.show_help_gpu)
         helpmenu.add_separator()
         helpmenu.add_command(label="Info", command=self.show_info)
-        menubar.add_cascade(label="Hilfe", menu=helpmenu)
-
+        menubar.add_cascade(label="Help", menu=helpmenu)
         self.root.config(menu=menubar)
+        self.root.update_idletasks()
+        log.info("Menu created.")
 
     def show_help_info(self):
         messagebox.showinfo("Was ist das?", "Mit dieser Anwendung kannst Du Deine Medienalben\n"
@@ -124,12 +143,22 @@ class MediaAnalyzerGUI:
 
         # ---------------- Layout / Konfiguration ----------------
     def create_top_controls(self):
+        # Set default GUI variables
+        log.info("Top controls GUI creating...")
+        self.model_var = StringVar(value="large-v3")
+        self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
+        self.interval_var = StringVar(value="30")
+        self.save_frames_var = IntVar(value=0)
+        self.save_csv_var = IntVar(value=1)
+        self.save_xlsx_var = IntVar(value=1)
+        self.save_tags_var = IntVar(value=0)
+
+        # Create the config panel
         self.config_frame = Frame(self.root)
         self.config_frame.pack(fill=X, pady=10, padx=10)
 
         # --- Zeile 1: Transkriptionsmodell ---
-        Label(self.config_frame, text="🎙 Transkriptionsmodell:", font=("Arial", 11)).grid(row=0, column=0, sticky=W, padx=5)
-        self.model_var = StringVar(value="large-v3")
+        Label(self.config_frame, text="🎙 Transcription Quality:", font=("Arial", 11)).grid(row=0, column=0, sticky=W, padx=5)
         self.model_menu = ttk.Combobox(
             self.config_frame,
             textvariable=self.model_var,
@@ -137,35 +166,41 @@ class MediaAnalyzerGUI:
             state="readonly", width=10
         )
         self.model_menu.bind("<<ComboboxSelected>>", self.on_whisper_model_change)
-
         self.model_menu.grid(row=0, column=1, sticky=W, padx=5)
-        self.save_transcript_var = IntVar(value=1) # standardmäßig aktiviert
-        Checkbutton(self.config_frame, text="Transkripte speichern", variable=self.save_transcript_var).grid(row=0, column=2, sticky=W)
+        Checkbutton(self.config_frame, text="Save Transcripts", variable=self.save_transcript_var).grid(row=0, column=2, sticky=W)
+        self.create_gpu_status_widget()
 
-        # --- Zeile 2: Analyse-Intervall ---
-        Label(self.config_frame, text="⏱ Video Analyse-Intervall (Sek.):", font=("Arial", 11)).grid(row=1, column=0, sticky=W, padx=5)
-        self.interval_var = StringVar(value="30")
+        # --- Zeile 2: Video Analyse ---
+        Label(self.config_frame, text="⏱ Video Analyse Interval (sec):", font=("Arial", 11)).grid(row=1, column=0, sticky=W, padx=5)
         ttk.Entry(self.config_frame, textvariable=self.interval_var, width=6).grid(row=1, column=1, sticky=W, padx=5)
-        self.save_frames_var = IntVar(value=0)
-        Checkbutton(self.config_frame, text="Frames speichern", variable=self.save_frames_var).grid(row=1, column=2, sticky=W)
+        Checkbutton(self.config_frame, text="Save Frames", variable=self.save_frames_var).grid(row=1, column=2, sticky=W)
 
-
-        # --- Zeile 3: Ordnerwahl ---
+        # --- Zeile 3: Ordner/File Wahl ---
         Label(self.config_frame, text="📂 Analyse File/Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky=W, padx=5, pady=(10,0))
-        Button(self.config_frame, text="Ordner auswählen", command=self.choose_folder).grid(row=2, column=1, sticky=W, padx=5, pady=(10,0))
-        Button(self.config_frame, text="File auswählen", command=self.choose_single_file).grid(row=2, column=2, sticky=W, padx=5, pady=(10, 0))
+        Button(self.config_frame, text="Folder select", command=self.choose_folder).grid(row=2, column=1, sticky=W, padx=5, pady=(10,0))
+        Button(self.config_frame, text="File select", command=self.choose_single_file).grid(row=2, column=2, sticky=W, padx=5, pady=(10, 0))
+        Button(self.config_frame, text="Delete AI tags", command=self.export_treeview_to_delete).grid(row=2, column=4,
+                                                                                                      sticky=W, padx=5,
+                                                                                                      pady=(10, 0))
+        Button(self.config_frame, text="Save AI tags", command=self.export_treeview_to_files).grid(row=2, column=6, sticky=W, padx=5, pady=(10, 0))
 
-        # Fortschritt
+        # --- Zeile 4 - Fortschrittanzeige und Ergebnisspeicherung
         self.status_label = Label(self.config_frame, text="Status", font=("Arial", 10))
         self.status_label.grid(row=3, column=0, sticky=W, padx=5, pady=(10, 0))
         self.status_label2 = Label(self.config_frame, text="Fortschritt:", font=("Arial", 10))
         self.status_label2.grid(row=3, column=1, sticky=W, padx=5, pady=(10, 0))
         self.progress = ttk.Progressbar(self.config_frame, orient="horizontal", length=400, mode="determinate")
         self.progress.grid(row=3, column=2, sticky=W, padx=5, pady=(10,0))
-        self.create_gpu_status_widget(self.config_frame)
+
+        Checkbutton(self.config_frame, text="Save CSV", variable=self.save_csv_var).grid(row=3, column=4, sticky=W)
+        Checkbutton(self.config_frame, text="Save Excel", variable=self.save_xlsx_var).grid(row=3, column=5, sticky=W)
+        Checkbutton(self.config_frame, text="Save AI Tags (Files)", variable=self.save_tags_var).grid(row=3, column=6, sticky=W)
+        self.root.update_idletasks()
+        log.info("Top controls GUI created.")
 
     # ---------------- Tabelle ----------------
     def create_table(self):
+        log.info("Table view creating...")
         table_frame = Frame(self.root)
         table_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
@@ -201,6 +236,88 @@ class MediaAnalyzerGUI:
         # Make the tree expand when window is resized
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
+        self.root.update_idletasks()
+        log.info("Table view created.")
+    #
+    # Reads data from TreeView.
+    #
+    def get_treeview_data(self, tree: ttk.Treeview):
+        columns = tree["columns"]
+        headers = [tree.heading(col)["text"] or col for col in columns]
+
+        rows = []
+        for item_id in tree.get_children():
+            rows.append(tree.item(item_id, "values"))
+
+        return headers, rows
+
+    #
+    # Writes CSV from filled Treeview.
+    #
+    def export_treeview_to_csv(self, file_path: str):
+        headers, rows = self.get_treeview_data(self.tree)
+
+        with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f, delimiter=";")
+            writer.writerow(headers)
+            writer.writerows(rows)
+
+    #
+    # Writes Excel from filled Treeview.
+    #
+    def export_treeview_to_xlsx(self, file_path: str):
+        headers, rows = self.get_treeview_data(self.tree)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Media Analysis"
+
+        # Header
+        ws.append(headers)
+
+        # Daten
+        for row in rows:
+            ws.append(list(row))
+
+        # Spaltenbreite automatisch anpassen
+        for col_idx, header in enumerate(headers, start=1):
+            max_len = len(str(header))
+            for row in rows:
+                try:
+                    max_len = max(max_len, len(str(row[col_idx - 1])))
+                except IndexError:
+                    pass
+
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 60)
+
+        wb.save(file_path)
+
+    #
+    # Writes AI tags for Address, Image and Audio to image, video, audio files
+    #
+    def export_treeview_to_files(self):
+        headers, rows = self.get_treeview_data(self.tree)
+
+         # Daten
+        with exiftool.ExifTool() as et:
+            for row in rows:
+                a = list(row)
+                address:str = a[6]
+                image_text = a[7]
+                audio_text = a[8]
+                media_tools.write_ai_metadata(os.path.join(self.folder, a[0]), address,image_text,audio_text,et )
+
+    #
+    # Delete AI tags from shown Images, Videos and Audio in TreeView
+    #
+    def export_treeview_to_delete(self):
+        headers, rows = self.get_treeview_data(self.tree)
+
+         # Daten
+        with exiftool.ExifToolHelper() as et:
+            for row in rows:
+                a = list(row)
+                media_tools.delete_ai_metadata(os.path.join(self.folder, a[0]), et)
 
     def get_gpu_status(self):
         if torch.cuda.is_available():
@@ -208,7 +325,7 @@ class MediaAnalyzerGUI:
             return True, name
         return False, None
 
-    def create_gpu_status_widget(self, parent):
+    def create_gpu_status_widget(self):
         gpu_available, gpu_name = self.get_gpu_status()
 
         if gpu_available:
@@ -219,7 +336,7 @@ class MediaAnalyzerGUI:
             style = "GpuInactive.TLabel"
 
         label = ttk.Label(self.config_frame, text=text, style=style)
-        label.grid(row=3, column=4, padx=5, pady=(10, 0))
+        label.grid(row=0, column=2, sticky="e", padx=5, pady=(10, 0))
         self.gpu_status_label = label
 
     def update_gpu_status_label(self):
@@ -274,14 +391,15 @@ class MediaAnalyzerGUI:
 
         def _load_model():
             try:
-                self.aitools = AITools(audio_model_size=whisper_choice)
+                self.aitools._load_audio_model(audio_model_size=whisper_choice)
+                #self.aitools = AITools(audio_model_size=whisper_choice)
                 # GUI-Update: GPU-Status
                 self.root.after(0, self.update_gpu_status_label)
 
             except Exception as e:
                 self.root.after(
                     0,
-                    lambda: messagebox.showerror(
+                    lambda e=e: messagebox.showerror(
                         "ERROR",
                         f"Audio Modell konnte nicht geladen werden:\n{e}"
                     )
@@ -409,7 +527,7 @@ class MediaAnalyzerGUI:
     ###########################################
     # Zeigt Tooltips von Image und Audio Description.
     ###########################################
-    def show_text_tooltip(self, text, x, y, max_width_px=600, max_height_px=400):
+    def show_text_tooltip(self, text:str, x:int, y:int, max_width_px:int=600, max_height_px:int=400):
         if not text.strip():
             return
 
@@ -455,7 +573,7 @@ class MediaAnalyzerGUI:
     ###########################################
     # Berechnet die Größe des Tooltips
     ###########################################
-    def _adjust_tooltip_size(self, max_width_px, max_height_px):
+    def _adjust_tooltip_size(self, max_width_px:int, max_height_px:int):
         win = self.text_tooltip_window
         ta = self.text_tooltip_window_text
 
@@ -486,7 +604,7 @@ class MediaAnalyzerGUI:
             self.text_tooltip_window = None
         self._last_tooltip_text = None
 
-    def show_video_thumbnail(self, path, x, y):
+    def show_video_thumbnail(self, path, x:int, y:int):
         try:
             clip = VideoFileClip(path)
             mid = clip.duration / 2
@@ -500,7 +618,7 @@ class MediaAnalyzerGUI:
         except Exception:
             self.hide_thumbnail()
 
-    def _show_thumbnail_window(self, photo, x, y):
+    def _show_thumbnail_window(self, photo, x:int, y:int):
         if self.thumb_window:
             self.thumb_window.destroy()
         self.thumb_window = Toplevel(self.root)
@@ -515,7 +633,7 @@ class MediaAnalyzerGUI:
         self._last_thumb_path = None
         self._last_thumb_image = None
 
-    def show_image_thumbnail(self, path, x, y):
+    def show_image_thumbnail(self, path, x:int, y:int):
         try:
             img = Image.open(path)
             # Orientierung aus EXIF
@@ -555,7 +673,6 @@ class MediaAnalyzerGUI:
             return
         values = self.tree.item(row_id, "values")
         filename = values[0]
-        #folder = getattr(self, "current_folder", "")
         folder = self.folder
         path = os.path.join(folder, filename)
         if os.path.exists(path) and filename.lower().endswith((".mp4", ".mov", ".avi")):
@@ -601,7 +718,7 @@ class MediaAnalyzerGUI:
     #
     # Hauptroutine liest files vom file_path und füllt die Tabelle.
     #
-    def analyze_folder(self, file_path):
+    def analyze_folder(self, file_path:Path):
         self.status_label.config(text="📦 Lade Files...")
         self.root.update_idletasks()
         self.tree.delete(*self.tree.get_children())
@@ -615,7 +732,6 @@ class MediaAnalyzerGUI:
 
         interval = int(self.interval_var.get())
 
-        records = []
         if os.path.isdir(file_path):
             # Erzeuge eine Liste von Dateipfaden für alle Dateien im Verzeichnis
             folder = file_path
@@ -637,10 +753,11 @@ class MediaAnalyzerGUI:
 
         self.status_label.config(text=f"🔍 Analysiere {total} Dateien...")
 
-        with exiftool.ExifToolHelper() as et:
+        with exiftool.ExifTool() as et:
 
             self.transcripts_missing = 0
             transcripts_cnt = 0
+            transcripts_duration = 0
             for i, path in enumerate(tqdm(all_files, desc="Analysiere")):
                 # Startzeit
                 start_time = time.time()
@@ -654,7 +771,7 @@ class MediaAnalyzerGUI:
                 image_text = ""
                 audio_text = ""
                 try:
-                    meta = get_meta_data(path, et_instance=et)
+                    meta = get_meta_data_bundle(path, et_instance=et)
                     rec["Date"] = meta.get("Date", "")
                     rec["Address"] = meta.get("Address", "")
                     rec["Lat"] = meta.get("Lat", "")
@@ -662,27 +779,30 @@ class MediaAnalyzerGUI:
                     rec["Length"] = meta.get("Length", "")
 
                     self._update_tree_columns(item_id, rec)
-                    # Mache Image Beschreibung sofort
-                    if kind == "image":
-                        image_text = self.aitools.describe_image(path)
-                        audio_text = ""
-                    elif kind == "video":
-                        # Das ist aufwendiger: Video zerlegen in Einzelbilder, alle %interval%s Sekunden.
-                        image_text = self.aitools.describe_video_by_frames(path, interval)
-                        audio_text = "..."
-                        if self.save_frames_var.get():
-                            self._save_video_frames(path, interval)
-                    elif kind == "audio":
-                        audio_text = "..."
-                        print("Versuche Bild aus Audio zu extrahieren")
-                        image = extract_mp3_front_cover(path)
-                        if image is None:
-                            print(f"{relpath} has no image")
-                            image_text = ""
-                        else:
-                            image_text = self.aitools.describe_image(image)
-                            print(f"Cover-Bild zeigt: {image_text}")
-                            # MP3 Cover Image extrahieren und beschreiben.
+
+                    meta_ai = read_ai_metadata(path, et)
+                    address:str = meta_ai.get("address", "")
+                    image_text:str = meta_ai.get("caption", "")
+                    audio_text:str = meta_ai.get("transcript", "")
+                    if len(image_text) < 4:
+                        # Mache Image Beschreibung sofort
+                        if kind == "image":
+                            image_text = self.aitools.describe_image(path)
+                        elif kind == "video":
+                            # Das ist aufwendiger: Video zerlegen in Einzelbilder, alle %interval%s Sekunden.
+                            image_text = self.aitools.describe_video_by_frames(path, interval)
+                            if self.save_frames_var.get():
+                                self._save_video_frames(path, interval)
+                        elif kind == "audio" and len(audio_text) < 4:
+                            print("Versuche Bild aus Audio zu extrahieren")
+                            image = extract_mp3_front_cover(path)
+                            if image is None:
+                                log.warning(f"{relpath} has no image")
+                                image_text = ""
+                            else:
+                                image_text = self.aitools.describe_image(image)
+                                log.info(f"Cover-Bild zeigt: {image_text}")
+                                # MP3 Cover Image extrahieren und beschreiben.
 
                     rec["Image"] = image_text
                     rec["Audio"] = audio_text
@@ -690,53 +810,64 @@ class MediaAnalyzerGUI:
 
                     # Nur audio_text im Hintergrund erzeugen
                     if kind in ("video", "audio"):
-                        self.transcripts_missing += 1
-                        transcripts_cnt += 1
-                        self._run_ai_analysis(path, kind, item_id, image_text)
+                        if audio_text == "..." or audio_text == "":
+                            self.transcripts_missing += 1
+                            transcripts_cnt += 1
+                            transcripts_duration:int = transcripts_duration+ int(rec["Length"])
+                            self._run_ai_analysis(path, kind, item_id, image_text, float(rec["Length"]))
 
 
                 except Exception as e:
                     print("⚠️ Fehler bei:", path, e)
 
-                records.append(rec) # TODO Audiotext muss später zugefügt werden.
                 self.progress["value"] = i + 1
                 self.root.update_idletasks()
-               # Endzeit
-#                end_time = time.time()
-#               # Zeitdifferenz berechnen
-#                elapsed_time = end_time - start_time
-#               if rec["Length"] == "":
-#                   print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden.")
-#               else:
-#                   print(f"Analyse {relpath} in {elapsed_time:.1f} Sekunden (Audio-Dauer: {rec['Length']}).")
 
-        self.wait_for_a_gui()
+        self.status_label.config(
+            text=f"🗣️ Transcribe Audios {self.transcripts_missing}"
+        )
+        self.progress["maximum"] = transcripts_duration
+        self.progress["value"] = 1
+        #self.progress.config(mode="indeterminate")
+
+        # --- Warten, bis alle Audio-Jobs abgearbeitet sind ---
+        def _wait_for_audio_jobs():
+            self.audio_queue.join()  # ⬅ BLOCKIERT, bis alle task_done() aufgerufen wurden
+            self.root.after(0, _on_all_audio_done)
+
+        def _on_all_audio_done():
+            if self.save_csv_var.get():
+                out_path = os.path.join(folder, "_media_analysis.csv")
+                self.export_treeview_to_csv(out_path)
+                self.status_label.config(text=f"✅ Fertig → {os.path.basename(out_path)}")
+            if self.save_xlsx_var.get():
+                out_path = os.path.join(folder, "_media_analysis.xlsx")
+                self.export_treeview_to_xlsx(out_path)
+                self.status_label.config(text=f"✅ Fertig → {os.path.basename(out_path)}")
+            if self.save_tags_var.get():
+                self.export_treeview_to_files()
+                self.status_label.config(text=f"✅ Fertig → Tags in Files")
+
+            messagebox.showinfo(
+                "Fertig",
+                "✅ Analyse abgeschlossen.\nAlle Audio-Transkripte sind fertig."
+            )
+
+        threading.Thread(
+            target=_wait_for_audio_jobs,
+            daemon=True,
+            name="WaitForAudioJobs"
+        ).start()
+
+        # HIER WARTEN und progress updaten, während die Audio Transcripts erzeugt werden im Thread _audio_worker_loop().
+        self.progress.config(mode="determinate")
         if total == 1:  # only show this window in single file mode
             text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
             self.show_result_window(file_path, kind, text)
 
-        self.progress["maximum"] = transcripts_cnt
-        self.progress["value"] = 0
-        df = pd.DataFrame(records)
-        out_path = os.path.join(folder, "_media_analysis.csv")
-        df.to_csv(out_path, sep=";", index=False, encoding="utf-8-sig")
-        out_file = os.path.basename(out_path)
-        self.status_label.config(text=f"✅ Fertig → {out_file}")
-        relpath = os.path.relpath(out_path, folder)
-        messagebox.showinfo("Fertig", f"✅ Analyse abgeschlossen.\nDaten gespeichert unter:\n{relpath}")
-
     # ---------------- Single File Mode ----------------
-    def analyze_single_file(self, file_path):
+    def analyze_single_file(self, file_path:Path):
         self.analyze_folder(file_path)
-
-    # Wartet bis transcripts_missing ändert
-    def wait_for_a_gui(self, callback, poll_ms=1000):
-        def _check():
-            if self.transcripts_missing is not None:
-                callback(self.transcripts_missing)
-            else:
-                self.root.after(poll_ms, _check)
-        _check()
 
     #
     # Startet einen Thread um Audio Transkription zu machen
@@ -761,12 +892,12 @@ class MediaAnalyzerGUI:
                 print("_audio_worker_loop(): No audio work to do")
                 break  # sauberer Shutdown
 
-            path, kind, item_id, image_text = job
+            path, kind, item_id, image_text, duration = job
             audio_text = ""
             try:
 
                 audio_text = self.aitools.transcribe_audio(path)
-                print(f"_audio_worker_loop() end:\n{audio_text}")
+                print(f"_audio_worker_loop(): {os.path.basename(path)}\n{audio_text}")
                 if self.save_transcript_var.get():
                     text = f"\"{audio_text}\"\n\n{image_text.translate(str.maketrans('|', '\n'))}"
                     with open(f"{path}.txt", "w", encoding="utf-8") as f:
@@ -782,6 +913,7 @@ class MediaAnalyzerGUI:
                     audio_text
                 )
                 self.transcripts_missing -= 1  # ✅ hierhin
+                self.progress["value"] += int(duration)
                 self.audio_queue.task_done()
 
     def _update_tree_ai_columns(self, item_id, audio_text):
@@ -796,20 +928,20 @@ class MediaAnalyzerGUI:
             self.status_label.config(text="✅ Audio-Transkription abgeschlossen")
 
     #
-    # Push jedes Audio und Video in die Queue.
+    # Push jedes Audio und Video in die Queue. _audio_worker_loop()
     #
-    def _run_ai_analysis(self, path, kind, item_id, image_text):
+    def _run_ai_analysis(self, path, kind:str, item_id, image_text:str, length:float):
         if kind not in ("audio", "video"):
             return
-        print(f"queue.size={self.audio_queue.qsize()}")
         self.audio_queue.put(
-            (path, kind, item_id, image_text)
+            (path, kind, item_id, image_text, length)
         )
+        log.debug(f"queue.size={self.audio_queue.qsize()}")
 
     #
     # AI Ergebnisse eintragen.
     #
-    def _update_tree_ai_columns(self, item_id, audio_text):
+    def _update_tree_ai_columns(self, item_id, audio_text:str):
         values = list(self.tree.item(item_id, "values"))
 
         # Spaltenindex:
@@ -832,7 +964,12 @@ class MediaAnalyzerGUI:
         values[2] = rec["Date"]
         values[3] = rec["Lat"]
         values[4] = rec["Lon"]
-        values[5] = rec["Length"]
+        if rec["Length"]:
+            minutes:int = int(float(rec["Length"]) // 60)
+            seconds:int = int(float(rec["Length"]) % 60)
+            values[5] = f"{minutes}:{seconds:02d}"
+        else:
+            values[5] = ""
         values[6] = rec["Address"]
         values[7] = rec["Image"]
         self.tree.item(item_id, values=values)
