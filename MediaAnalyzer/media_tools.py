@@ -5,6 +5,7 @@ import json
 import re
 import os
 import io
+from pathlib import Path
 from datetime import datetime
 from dateutil import parser
 from geopy import Nominatim
@@ -53,7 +54,7 @@ def _get_audio_duration(file_path):
         if audio is not None:
             # Die Dauer ist im .info-Objekt gespeichert
             duration_seconds = audio.info.length
-            return duration_seconds
+            return int(duration_seconds)
         else:
             return f"Fehler: Unbekanntes oder beschädigtes Format: {file_path}"
 
@@ -105,7 +106,6 @@ def _get_date_from_metadata(filepath, et_instance=None):
     Verwendet PyExifTool für beste Abdeckung.
     Gibt ein datetime-Objekt oder None zurück.
     """
-    print(f"_get_date_from_metadata: {filepath}")
     extension = os.path.splitext(filepath)[1].lower()
     # 1. Fallback-Prüfung: Prüfe auf Dateierstellungsdatum (Windows ctime)
     # Wenn wir keine Metadaten finden, nutzen wir das Datum des Dateisystems
@@ -115,15 +115,6 @@ def _get_date_from_metadata(filepath, et_instance=None):
         fallback_date = datetime.fromtimestamp(timestamp)
     except:
         fallback_date = None
-
-#    if extension in FILE_TAGS and et_instance:
-#        try:
-#            # Wir nutzen die bereits offene Instanz!
-#            # Hinweis: get_metadata erwartet oft eine Liste, bei einer Datei also [filepath]
-#            metadata_list = et_instance.get_metadata(filepath)
-#            # PyExifTool gibt eine Liste zurück, wir brauchen das erste Element (Dictionary)
-#            metadata = metadata_list[0] if metadata_list else {}
-
 
     if extension in FILE_TAGS and et_instance:
         try:
@@ -200,7 +191,7 @@ def get_kind_of_media(path) -> str:
 ############################################################
 # Extract the meta data from all type of media files
 ############################################################
-def get_meta_data(path: str, et_instance: object = None) -> Dict[str, Any]:
+def get_meta_data_bundle(path: Path, et_instance: object = None) -> Dict[str, Any]:
     res = { "Date": "", "Address": "", "Lat": "", "Lon": "", "Length": ""}
     kind = get_kind_of_media(path)
     if kind == "image":
@@ -343,9 +334,7 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
         clip = VideoFileClip(path)
         dur = float(clip.duration)
         clip.close()
-        minutes = int(dur // 60)
-        seconds = int(dur % 60)
-        result["Length"] = f"{minutes}:{seconds:02d}"
+        result["Length"] = dur
     except Exception:
         # fallback wird später per ffprobe versucht
         pass
@@ -364,10 +353,7 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
             dur_s = fmt.get("duration")
             try:
                 if dur_s:
-                    durf = float(dur_s)
-                    minutes = int(durf // 60)
-                    seconds = int(durf % 60)
-                    result["Length"] = f"{minutes}:{seconds:02d}"
+                    result["Length"] = dur_s
             except Exception:
                 pass
 
@@ -528,3 +514,124 @@ def extract_mp3_front_cover2(mp3_path: str) -> Image.Image | None:
         return Image.open(io.BytesIO(tag.data))
     except Exception:
         return None
+
+#
+# Bewahre die Original-Filezeit auf
+#
+def _preserve_file_times(path):
+    stat = os.stat(path)
+    return stat.st_atime, stat.st_mtime
+
+#
+# Setze die Original-Filezeit zurück
+#
+def _restore_file_times(path, atime, mtime):
+    os.utime(path, (atime, mtime))
+
+#
+# Schreibe AI Metadaten (Bildschreibung, ...) ins Video-File.
+def write_ai_metadata(
+    path: str, address: str = "", image2text: str ="", transcript: str = "", et = None):
+    kind = get_kind_of_media(path)
+    atime, mtime = _preserve_file_times(path)
+    args = [
+            "-charset",
+            "utf8" ]
+    args.append( "-XMP:CreatorTool=MediaAnalyzer AI")
+    if kind == "audio":
+        args.append(f"-Comment={image2text}")     # Cover Bild Beschreibung
+        args.append(f"-ID3:Lyrics={transcript}")
+        args.append(f"-ID3v2:UnsynchronizedLyrics={transcript}")
+    elif kind == "image":
+        args.append(f"-XMP:Location={address}")
+        args.append(f"-XMP:FullAddress={address}")
+        args.append(f"-XMP:Description={image2text}")
+        args.append(f"-IPTC:Caption-Abstract={image2text}")
+        args.append(f"-XMP:Transcript={transcript}")  # sollte leer sein
+    elif kind == "video":
+        args.append(f"-XMP:Location={address}")
+        args.append(f"-QuickTime:LocationName={address}")
+        args.append(f"-XMP:FullAddress={address}")
+        args.append(f"-QuickTime:Description={image2text}")
+        args.append(f"-XMP:Description={image2text}")
+        print(f"Writing transcript={transcript} to video")
+        args.append(f"-XMP-iptcExt:Transcript={transcript}") # Profi Transcript
+        args.append(f"-XMP:Transcript={transcript}") # Transcript
+
+
+    if et is None:
+        with exiftool.ExifTool() as et:
+            et._encoding = "utf-8"
+            et.execute(*args, path)
+    else:
+        et._encoding = "utf-8"
+        et.execute(*args, path)
+
+    _restore_file_times(path, atime, mtime)
+
+#
+# Lese die AI Metadaten
+#
+
+def read_ai_metadata(path: str, et) -> dict:
+    # Hinweis: Stelle sicher, dass et.execute_json mit dem Parameter "-G1" aufgerufen wurde
+    meta_list = et.execute_json("-G1", "-s", path)
+    meta = meta_list[0] if meta_list else {}
+    kind: str = get_kind_of_media(path)
+
+    # Initialisierung der Variablen
+    address = ""
+    image2text = ""
+    audio2text = ""
+
+    if kind == "audio":
+        address = ""
+        # Wichtig: Im JSON heißen die Tags meist 'Group:TagName'
+        image2text = meta.get("ID3:Comment") or meta.get("File:Comment") or ""
+        audio2text = (meta.get("ID3:Lyrics") or
+                      meta.get("ID3:UnsynchronizedLyrics") or "")
+
+    elif kind == "image":
+        # Kein "-" vor dem Tag-Namen im Dictionary!
+        address = meta.get("XMP:FullAddress") or meta.get("XMP:Location") or ""
+        image2text = (meta.get("XMP:Description") or
+                      meta.get("IPTC:Caption-Abstract") or "")
+
+    elif kind == "video":
+        address = (meta.get("XMP:FullAddress") or
+                   meta.get("QuickTime:LocationName") or "")
+        image2text = (meta.get("QuickTime:Description") or
+                      meta.get("XMP:Description") or "")
+        # Korrektur der Klammern und Tag-Namen
+        audio2text = (meta.get("XMP-iptcExt:Transcript") or
+                      meta.get("XMP:Transcript") or "")
+
+    return {
+        "address": address,
+        "caption": image2text,
+        "transcript": audio2text, # Komma war hier wichtig
+        "creator": meta.get("XMP:CreatorTool") or meta.get("Info:CreatorTool") or ""
+    }
+
+def delete_ai_metadata(path: str, et):
+    atime, mtime = _preserve_file_times(path)
+
+    et.execute(
+        "-ID3:Comment=",
+        "-File:Comment=",
+        "-ID3:Lyrics=",
+        "-ID3:UnsynchronizedLyrics=",
+        "-XMP:FullAddress=",
+        "-XMP:Location=",
+        "-XMP:Description=",
+        "-IPTC:Caption-Abstract=",
+        "-XMP:FullAddress=",
+        "-QuickTime:LocationName=",
+        "-QuickTime:Description=",
+        "-XMP-iptcExt:Transcript=",
+        "-XMP:Transcript=",
+        path
+    )
+    _restore_file_times(path, atime, mtime)
+
+
