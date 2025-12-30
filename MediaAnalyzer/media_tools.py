@@ -338,7 +338,7 @@ def _get_video_metadata(path: Path) -> Dict[str, Any]:
         clip = VideoFileClip(path)
         dur = float(clip.duration)
         clip.close()
-        result["Length"] = dur
+        result["Length"] = str(dur)
     except Exception:
         log.exception("_get_video_metadata() Exception clip")
         # fallback wird später per ffprobe versucht
@@ -366,23 +366,18 @@ def _get_video_metadata(path: Path) -> Dict[str, Any]:
         tags = fmt.get("tags") or {}
         creation = tags.get("creation_time") or tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
 
-        if True:
-            if creation:
+        if creation:
+            try:
+                c = creation.strip()
+                if c.endswith("Z"):
+                    c = c[:-1]
                 try:
-                    c = creation.strip()
-                    if c.endswith("Z"):
-                        c = c[:-1]
-                    try:
-                        dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S.%f")
-                    except ValueError:
-                        dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S")
-                    result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except Exception as e:
-                    log.exception(f"⚠️ Fehler beim Parsen von creation_time: {creation}: ")
-        else:
-            # funktioniert nicht mit Package: from dateutil import parser
-            dt = parser.isoparse(creation)
-            result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S.%f")
+                except ValueError:
+                    dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S")
+                result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception as e:
+                log.exception(f"⚠️ Fehler beim Parsen von creation_time: {creation}: ")
 
         # check stream tags as well
         streams = info.get("streams", [])
@@ -648,7 +643,7 @@ def read_ai_metadata(path: Path, et) -> dict:
         "creator": meta.get("XMP:CreatorTool") or meta.get("Info:CreatorTool") or ""
     }
 
-def delete_ai_metadata(path: str, et):
+def delete_ai_metadata(path: Path, et):
     atime, mtime = _preserve_file_times(path)
 
     et.execute(

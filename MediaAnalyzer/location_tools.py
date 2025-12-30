@@ -1,7 +1,7 @@
-import requests
 import functools
-import math
-from typing import Optional, Tuple
+from typing import Optional
+
+import requests
 
 
 class NearbyLandmarkResolver:

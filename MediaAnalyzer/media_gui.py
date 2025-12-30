@@ -2,22 +2,18 @@ import os
 import csv
 import threading
 import queue
-import time
 from pathlib import Path
 import torch
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
-import pandas as pd
 from tkinter import (
     Tk, Frame, Button, Label, filedialog, ttk, messagebox, Text,
-    Scrollbar, Checkbutton, IntVar, StringVar, Menu, Toplevel, Canvas, PhotoImage, END, BOTH, X, Y, RIGHT, BOTTOM, W
+    Scrollbar, Checkbutton, IntVar, StringVar, Menu, Toplevel, END, BOTH, W
 )
 from tkinter import font as tkfont
 from tqdm import tqdm
 from PIL import Image, ImageTk, ExifTags
 from exiftool import ExifToolHelper
-#import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
-
 import media_tools
 from ai_tools import AITools
 from media_tools import get_meta_data_bundle, get_kind_of_media, format_time2mmss, \
@@ -44,6 +40,16 @@ class MediaAnalyzerGUI:
         self._last_thumb_image = None
         self._model_loading = False
         self.folder:Path = None
+        # GUI defaults:
+        self.model_var = StringVar(value="large-v3")
+        self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
+        self.interval_var = StringVar(value="30")
+        self.save_frames_var = IntVar(value=0)
+        self.save_csv_var = IntVar(value=1)
+        self.save_xlsx_var = IntVar(value=1)
+        self.save_tags_var = IntVar(value=0)
+        self.landmark_var = IntVar(value=1)  # Calculate nearest landmark, sightseeing point <300 m)
+
         self.create_menu()
         self.create_top_controls()
         self.create_table()
@@ -84,7 +90,8 @@ class MediaAnalyzerGUI:
         self.root.update_idletasks()
         log.debug("Menu created.")
 
-    def show_help_info(self):
+    @staticmethod
+    def show_help_info():
         messagebox.showinfo("Was ist das?", "Mit dieser Anwendung kannst Du Deine Medienalben\n"
                                                         "Fotos, Videos und sogar Audiodateien\n"
                                                         "automatisch beschreiben lassen. Dazu werden zwei\n"
@@ -98,14 +105,17 @@ class MediaAnalyzerGUI:
                                                         "Lernvideos: Transkipt erstellen und alle 30 sec Bild speichern.\n"
                                                         "Hörbuch: In Text verwandeln.")
 
-    def show_help_blip(self):
+    @staticmethod
+    def show_help_blip():
         messagebox.showinfo("Info", "Die Offline KI BLIP macht kurze Bildbeschreibungen.\n" 
             "Man kann die maximale Anzahl Tokens anpassen, aber in der Realität verändert sich nicht viel.\n"
             "Voreinstellung hier ist 100.\n"
             "\nBLIP  wurde von Salesforce Research entwickelt und\n"
             "steht unter der Apache License 2.0 https://spdx.org/licenses/Apache-2.0.html\n"
                             )
-    def show_help_whisper(self):
+
+    @staticmethod
+    def show_help_whisper():
         messagebox.showinfo("Info", "Die Offline KI Whisper transkribiert Audios.\n" 
             "️Mögliche Whisper-Modelle zur Auswahl:\n"
             "Name	Größe (RAM)	Geschwindigkeit	Genauigkeit	Bemerkung\n"
@@ -118,7 +128,8 @@ class MediaAnalyzerGUI:
             "          steht unter der MIT Lizenz https://spdx.org/licenses/MIT.html\n"
         )
 
-    def show_help_gpu(self):
+    @staticmethod
+    def show_help_gpu():
         messagebox.showinfo("Info",
             "For using the GPU power of your graphic card for the AI models,\n"
             "you may need to install torch, see below.\n"
@@ -132,7 +143,8 @@ class MediaAnalyzerGUI:
             "Maybe cu118 or cu123 works better on your PC."
         )
 
-    def show_info(self):
+    @staticmethod
+    def show_info():
         messagebox.showinfo("Info", "Version 1.0\nErstellt von Stefan Markgraf.\n"
                                  "Lizenz: MIT\n\n"
                                  "Benutzte KI-Modelle und Services:\n"
@@ -145,18 +157,10 @@ class MediaAnalyzerGUI:
     def create_top_controls(self):
         # Set default GUI variables
         log.debug("Top controls GUI creating...")
-        self.model_var = StringVar(value="large-v3")
-        self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
-        self.interval_var = StringVar(value="30")
-        self.save_frames_var = IntVar(value=0)
-        self.save_csv_var = IntVar(value=1)
-        self.save_xlsx_var = IntVar(value=1)
-        self.save_tags_var = IntVar(value=0)
-        self.landmark_var = IntVar(value=1)         # Calculate nearest landmark, sightseeing point <300 m)
 
         # Create the config panel
         self.config_frame = Frame(self.root)
-        self.config_frame.pack(fill=X, pady=10, padx=10)
+        self.config_frame.pack(fill="x", pady=10, padx=10)
 
         # --- Zeile 1: Transkriptionsmodell ---
         Label(self.config_frame, text="🎙 Transcription Quality:", font=("Arial", 11)).grid(row=0, column=0, sticky=W, padx=5)
@@ -243,7 +247,8 @@ class MediaAnalyzerGUI:
     #
     # Reads data from TreeView.
     #
-    def get_treeview_data(self, tree: ttk.Treeview):
+    @staticmethod
+    def get_treeview_data(tree: ttk.Treeview):
         columns = tree["columns"]
         headers = [tree.heading(col)["text"] or col for col in columns]
 
@@ -322,7 +327,8 @@ class MediaAnalyzerGUI:
                 a = list(row)
                 media_tools.delete_ai_metadata(os.path.join(self.folder, a[0]), et)
 
-    def get_gpu_status(self):
+    @staticmethod
+    def get_gpu_status():
         if torch.cuda.is_available():
             name = torch.cuda.get_device_name(0)
             return True, name
@@ -519,7 +525,7 @@ class MediaAnalyzerGUI:
                 return
             self._last_tooltip_text = full_text
 
-            # Zeige Tooltip (mit max Größe und Scrollbar falls nötig)
+            # Zeige Tooltip (mit max Größe und Scrollbar, falls nötig)
             self.show_text_tooltip(full_text, event.x_root + 15, event.y_root + 15)
             return
 
@@ -748,7 +754,6 @@ class MediaAnalyzerGUI:
             all_files = [file_path]
         else:
             # Bei ungültigem Pfad kann hier ein Fehler ausgelöst oder behandelt werden
-            all_files = []
             log.warning("Der angegebene Pfad ist weder eine Datei noch ein Verzeichnis.")
             return
 
@@ -824,7 +829,7 @@ class MediaAnalyzerGUI:
                             self._run_ai_analysis(p, kind, item_id, image_text, float(rec["Length"]))
 
 
-                except Exception as e:
+                except Exception:
                     log.exception(f"⚠️ Fehler bei: {p}: ")
 
                 self.progress["value"] = i + 1
@@ -996,7 +1001,8 @@ class MediaAnalyzerGUI:
         text_area.config(state="disabled")
 
     # ---------------- Hilfsfunktionen ----------------
-    def _save_video_frames(self, video_path, interval):
+    @staticmethod
+    def _save_video_frames(video_path, interval):
         """Speichert Frames als PNGs im gleichen Ordner."""
         from moviepy.video.io.VideoFileClip import VideoFileClip
         clip = VideoFileClip(video_path)
@@ -1005,14 +1011,14 @@ class MediaAnalyzerGUI:
         while t < clip.duration:
             frame = clip.get_frame(t)
             img = Image.fromarray(frame)
-            seq = int(t / interval) + 1
             mmss = format_time2mmss(t).replace(":", "-")
             out_name = f"{base}+{mmss}.png"
             img.save(out_name)
             t += interval
         clip.close()
 
-    def _save_transcript(self, file_path, text):
+    @staticmethod
+    def _save_transcript(file_path, text):
         """Speichert Transkript in .txt-Datei."""
         base, _ = os.path.splitext(file_path)
         txt_path = f"{base}_transkript.txt"
