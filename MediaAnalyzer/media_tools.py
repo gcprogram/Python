@@ -13,15 +13,16 @@ from moviepy.video.io.VideoFileClip import VideoFileClip  # <- korrigierter Impo
 from typing import Tuple, Dict, Any
 # Metadaten-Bibliotheken
 from PIL import Image  # Für JPEGs/PNGs (Exif)
-from mutagen.id3 import ID3  # Für WAVs (ID3-Tags)
-from mutagen.mp4 import MP4  # Für MP4s
-import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
+from exiftool import ExifToolHelper # Bester Allrounder, erfordert separate ExifTool-Installation!
 
 from mutagen import File
 from mutagen.wave import WAVE
-from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC
+import logging
 
+from location_tools import NearbyLandmarkResolver
+
+log = logging.getLogger(__name__)
 MEDIA_EXT = {
     ".jpg": "image", ".jpeg": "image", ".png": "image",
     ".mp4": "video", ".mov": "video", ".avi": "video",
@@ -89,7 +90,7 @@ def _format_date(self, date_str):
                 dt = datetime.strptime(date_str[:19], fmt)
                 return dt.strftime("%Y-%m-%d %H:%M:%S")
             except Exception as e:
-                print(f"Exception in _format_date(): {e}", )
+                log.exception(f"Exception in _format_date(): ")
                 pass
     except Exception:
         pass
@@ -100,13 +101,13 @@ def _format_date(self, date_str):
 # Find date of a video file
 #############################################
 
-def _get_date_from_metadata(filepath, et_instance=None):
+def _get_date_from_metadata(filepath:Path, et_instance=None):
     """
     Versucht, das Erstellungsdatum aus den Metadaten der Datei zu extrahieren.
     Verwendet PyExifTool für beste Abdeckung.
     Gibt ein datetime-Objekt oder None zurück.
     """
-    extension = os.path.splitext(filepath)[1].lower()
+    extension:str = filepath.suffix.lower()
     # 1. Fallback-Prüfung: Prüfe auf Dateierstellungsdatum (Windows ctime)
     # Wenn wir keine Metadaten finden, nutzen wir das Datum des Dateisystems
     try:
@@ -144,7 +145,7 @@ def _get_date_from_metadata(filepath, et_instance=None):
                                 pass
 
         except Exception as e:
-            # print(f"Fehler bei PyExifTool für {os.path.basename(filepath)}: {e}")
+            # log.exception(f"Fehler bei PyExifTool für {os.path.basename(filepath)}:")
             pass
 
         # 2. Fallback: Für Audio-Dateien (WAV) versuchen wir Mutagen
@@ -168,7 +169,7 @@ def _get_date_from_metadata(filepath, et_instance=None):
 
             except Exception as e:
                 # Wenn WAV-Metadaten fehlschlagen, gehen wir zum letzten Fallback
-                # print(f"WAV-Fehler bei {os.path.basename(filepath)}: {e}")
+                # log.exception(f"WAV-Fehler bei {os.path.basename(filepath)}:")
                 pass
 
         # 3. Fallback: Rückgabe des Dateisystem-Datums
@@ -181,8 +182,8 @@ def _get_date_from_metadata(filepath, et_instance=None):
 #  image
 #  unknown
 ############################################################
-def get_kind_of_media(path) -> str:
-    ext = os.path.splitext(path)[1].lower()
+def get_kind_of_media(path:Path) -> str:
+    ext = path.suffix.lower()
     kind:str = "unknown"
     if ext in MEDIA_EXT:
         kind = MEDIA_EXT[ext]
@@ -191,8 +192,8 @@ def get_kind_of_media(path) -> str:
 ############################################################
 # Extract the meta data from all type of media files
 ############################################################
-def get_meta_data_bundle(path: Path, et_instance: object = None) -> Dict[str, Any]:
-    res = { "Date": "", "Address": "", "Lat": "", "Lon": "", "Length": ""}
+def get_meta_data_bundle(path: Path, meta_ai:dict, et_instance: object = None) -> Dict[str, Any]:
+    res = { "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark":"" }
     kind = get_kind_of_media(path)
     if kind == "image":
         res = _get_exif_data(path)
@@ -200,26 +201,29 @@ def get_meta_data_bundle(path: Path, et_instance: object = None) -> Dict[str, An
         res = _get_video_metadata(path)
     elif kind == "audio":
         # ... (der Fallback-Block ist hier nicht relevant, da er in _get_date_from_metadata liegt)
-        print(f"get_meta_data: {path}")
+        log.info(f"get_meta_data: {path}")
         dt_obj = _get_date_from_metadata(path, et_instance=et_instance)
         # Sicherstellen, dass das Datum immer im Zielformat (String) gespeichert wird
         if isinstance(dt_obj, datetime):
             res["Date"] = dt_obj.strftime(DATE_FORMAT_STR)
         else:
             res["Date"] = ""  # Oder behalten Sie den Standardwert
-        res["Address"] = ""
         res["Lat"] = ""
         res["Lon"] = ""
         res["Length"] = _get_audio_duration(path)
-
+        res["Address"] = meta_ai.get("Address")
+        res["Landmark"] = meta_ai.get("Landmark")
+    if res["Address"] == "" and res["Landmark"] =="":
+        if res["Lat"] != "" and res["Lon"] != "":
+            res["Address"], res["Landmark"] = reverse_geocode(float(res["Lat"]), float(res["Lon"]))
     return res
 
-def _get_exif_data(path: str) -> Dict[str, Any]:
+def _get_exif_data(path: Path) -> Dict[str, Any]:
     """
     Liest EXIF aus Bildern (Datum, GPS) und gibt Dict mit Schlüsseln:
     {'Date': str, 'Lat': float|'', 'Lon': float|''}
     """
-    data = {"Date": "", "Address": "", "Lat": "", "Lon": "", "Length": ""}
+    data = {"Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark": ""}
     try:
         with open(path, 'rb') as f:
             tags = exifread.process_file(f, details=False)
@@ -233,6 +237,7 @@ def _get_exif_data(path: str) -> Dict[str, Any]:
                 # 2. Formatieren des datetime-Objekts in den Ziel-String ('%Y-%m-%d %H:%M:%S')
                 data["Date"] = dt_obj.strftime(DATE_FORMAT_STR)
             except ValueError:
+                log.exception("_get_exif_data() ValueError")
                 # Bei Parsing-Fehler, z.B. wenn nur das Datum vorhanden ist, ignorieren oder loggen
                 pass
 
@@ -252,12 +257,11 @@ def _get_exif_data(path: str) -> Dict[str, Any]:
                 if gps_lon_ref and getattr(gps_lon_ref, "values", None):
                     if str(gps_lon_ref.values) != "E":
                         lon = -lon
-                data["Address"] = reverse_geocode(lat, lon)
                 data["Lat"] = f"{lat:.6f}"
                 data["Lon"] = f"{lon:.6f}"
     except Exception as e:
         # still return defaults, but print optional warning
-        # print("Warnung EXIF:", e)
+        log.exception("_get_exif_data() Warnung EXIF: ")
         pass
     return data
 
@@ -327,8 +331,8 @@ def _extract_coords_from_video_tags(tags: Dict[str, Any]) -> Tuple[Any, Any]:
 #  - duration in mm:ss (versucht moviepy, ansonsten ffprobe)
 #  - summary: einfacher bereinigter Dateiname
 ####################################################################
-def _get_video_metadata(path: str) -> Dict[str, Any]:
-    result = {"Date": "", "Address": "", "Lat": "", "Lon": "", "Length": ""}
+def _get_video_metadata(path: Path) -> Dict[str, Any]:
+    result = {"Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark":""}
     # 1) Versuche moviepy für Dauer (falls moviepy funktioniert)
     try:
         clip = VideoFileClip(path)
@@ -336,6 +340,7 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
         clip.close()
         result["Length"] = dur
     except Exception:
+        log.exception("_get_video_metadata() Exception clip")
         # fallback wird später per ffprobe versucht
         pass
 
@@ -373,7 +378,7 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
                         dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S")
                     result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
                 except Exception as e:
-                    print(f"⚠️ Fehler beim Parsen von creation_time: {creation} ({e})")
+                    log.exception(f"⚠️ Fehler beim Parsen von creation_time: {creation}: ")
         else:
             # funktioniert nicht mit Package: from dateutil import parser
             dt = parser.isoparse(creation)
@@ -390,7 +395,6 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
             # try to extract location from stream tags
             latlon = _extract_coords_from_video_tags(stags)
             if latlon and latlon[0] is not None:
-                result["Address"] = reverse_geocode(latlon[0], latlon[1])
                 result["Lat"] = f"{latlon[0]:.6f}"
                 result["Lon"] = f"{latlon[1]:.6f}"
                 break
@@ -399,11 +403,11 @@ def _get_video_metadata(path: str) -> Dict[str, Any]:
         if (not result["Lat"] or not result["Lon"]) and tags:
             latlon = _extract_coords_from_video_tags(tags)
             if latlon and latlon[0] is not None:
-                result["Address"] = reverse_geocode(latlon[0], latlon[1])
                 result["Lat"] = f"{latlon[0]:.6f}"
                 result["Lon"] = f"{latlon[1]:.6f}"
 
     except Exception:
+        log.exception("_get_video_metadata() Exception ffprobe not available")
         # falls ffprobe nicht verfügbar oder fehlerhaft -> ignore
         pass
 
@@ -439,8 +443,10 @@ def reverse_geocode(lat, lon):
     if not lat or not lon:
         return ""
     loc: str = ""
+    resolver = NearbyLandmarkResolver()
+    landmark:str = resolver.resolve(lat, lon)
     try:
-        geolocator = Nominatim(user_agent="media_analyzer")
+        geolocator = Nominatim(user_agent="AI MediaAnalyzer")
         location = geolocator.reverse((lat, lon), language="de", timeout=10)
         if location and location.address:
             # z. B. nur Stadt oder Land extrahieren
@@ -459,10 +465,10 @@ def reverse_geocode(lat, lon):
             if len(loc) > 0:
                 loc += ", "
             loc += parts.get("country")
-            return loc
+            return loc, landmark
     except Exception:
-        return ""
-    return ""
+        return "",""
+    return "",""
 
 
 def extract_mp3_front_cover(mp3_path):
@@ -518,22 +524,35 @@ def extract_mp3_front_cover2(mp3_path: str) -> Image.Image | None:
 #
 # Bewahre die Original-Filezeit auf
 #
-def _preserve_file_times(path):
+def _preserve_file_times(path:Path):
     stat = os.stat(path)
     return stat.st_atime, stat.st_mtime
 
 #
 # Setze die Original-Filezeit zurück
 #
-def _restore_file_times(path, atime, mtime):
+def _restore_file_times(path:Path, atime, mtime):
     os.utime(path, (atime, mtime))
 
+def assert_utf8(text: str) -> str:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("Text is not valid UTF-8")
+    return text
 #
 # Schreibe AI Metadaten (Bildschreibung, ...) ins Video-File.
 def write_ai_metadata(
-    path: str, address: str = "", image2text: str ="", transcript: str = "", et = None):
-    kind = get_kind_of_media(path)
+    path: Path, address: str = "", landmark:str = "", image2text: str ="", transcript: str = "", et = None):
+
+    log.info(f"Writing ai metadata to {path}")
+    kind:str = get_kind_of_media(path)
     atime, mtime = _preserve_file_times(path)
+    transcript = assert_utf8(transcript)
+    image2text = assert_utf8(image2text)
+    address = assert_utf8(address)
+    landmark = assert_utf8(landmark)
+    adr_mark = f"{address}|{landmark}"
     args = [
             "-charset",
             "utf8" ]
@@ -542,64 +561,79 @@ def write_ai_metadata(
         args.append(f"-Comment={image2text}")     # Cover Bild Beschreibung
         args.append(f"-ID3:Lyrics={transcript}")
         args.append(f"-ID3v2:UnsynchronizedLyrics={transcript}")
+        args.append(f"-XMP-aimedia:Transcript={transcript}")
     elif kind == "image":
-        args.append(f"-XMP:Location={address}")
-        args.append(f"-XMP:FullAddress={address}")
+        args.append(f"-XMP:Location={adr_mark}")
+        args.append(f"-XMP:FullAddress={adr_mark}")
         args.append(f"-XMP:Description={image2text}")
         args.append(f"-IPTC:Caption-Abstract={image2text}")
         args.append(f"-XMP:Transcript={transcript}")  # sollte leer sein
     elif kind == "video":
-        args.append(f"-XMP:Location={address}")
-        args.append(f"-QuickTime:LocationName={address}")
-        args.append(f"-XMP:FullAddress={address}")
+        args.append(f"-XMP:Location={adr_mark}")
+        args.append(f"-QuickTime:LocationName={adr_mark}")
+        args.append(f"-XMP:FullAddress={adr_mark}")
         args.append(f"-QuickTime:Description={image2text}")
         args.append(f"-XMP:Description={image2text}")
-        print(f"Writing transcript={transcript} to video")
         args.append(f"-XMP-iptcExt:Transcript={transcript}") # Profi Transcript
         args.append(f"-XMP:Transcript={transcript}") # Transcript
 
-
-    if et is None:
-        with exiftool.ExifTool() as et:
+    try:
+        if et is None:
+            with ExifToolHelper(encoding="utf-8") as et:
+                log.warning("write_ai_metadata() Programming performance issue: exiftool et is None, therefore CPU costly instanciation. ")
+                et._encoding = "utf-8"
+                et.execute(*args, str(path))
+        else:
             et._encoding = "utf-8"
-            et.execute(*args, path)
-    else:
-        et._encoding = "utf-8"
-        et.execute(*args, path)
+            et.execute(*args, str(path))
 
-    _restore_file_times(path, atime, mtime)
+        _restore_file_times(path, atime, mtime)
+        file_orig:Path = Path(f"{path}_original")
+        if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
+            file_orig.unlink()
+
+    except Exception:
+        log.exception("write_ai_metadata(): ")
 
 #
 # Lese die AI Metadaten
 #
 
-def read_ai_metadata(path: str, et) -> dict:
+def read_ai_metadata(path: Path, et) -> dict:
     # Hinweis: Stelle sicher, dass et.execute_json mit dem Parameter "-G1" aufgerufen wurde
-    meta_list = et.execute_json("-G1", "-s", path)
+    meta_list = et.execute_json("-G1", "-s", str(path))
     meta = meta_list[0] if meta_list else {}
     kind: str = get_kind_of_media(path)
 
     # Initialisierung der Variablen
     address = ""
+    landmark = ""
     image2text = ""
     audio2text = ""
 
     if kind == "audio":
         address = ""
+        landmark = ""
         # Wichtig: Im JSON heißen die Tags meist 'Group:TagName'
         image2text = meta.get("ID3:Comment") or meta.get("File:Comment") or ""
-        audio2text = (meta.get("ID3:Lyrics") or
+        audio2text = (meta.get("XMP-aimedia:Transcript") or meta.get("ID3:Lyrics") or
                       meta.get("ID3:UnsynchronizedLyrics") or "")
 
     elif kind == "image":
         # Kein "-" vor dem Tag-Namen im Dictionary!
-        address = meta.get("XMP:FullAddress") or meta.get("XMP:Location") or ""
+        adr_mark = meta.get("XMP:FullAddress") or meta.get("XMP:Location") or ""
+        parts = adr_mark.split("|")
+        address = parts[0] if len(parts) > 0 else ""
+        landmark = parts[1] if len(parts) > 1 else ""
         image2text = (meta.get("XMP:Description") or
                       meta.get("IPTC:Caption-Abstract") or "")
 
     elif kind == "video":
-        address = (meta.get("XMP:FullAddress") or
+        adr_mark = (meta.get("XMP:FullAddress") or
                    meta.get("QuickTime:LocationName") or "")
+        parts = adr_mark.split("|")
+        address = parts[0] if len(parts) > 0 else ""
+        landmark = parts[1] if len(parts) > 1 else ""
         image2text = (meta.get("QuickTime:Description") or
                       meta.get("XMP:Description") or "")
         # Korrektur der Klammern und Tag-Namen
@@ -607,7 +641,8 @@ def read_ai_metadata(path: str, et) -> dict:
                       meta.get("XMP:Transcript") or "")
 
     return {
-        "address": address,
+        "Address": address,
+        "Landmark": landmark,
         "caption": image2text,
         "transcript": audio2text, # Komma war hier wichtig
         "creator": meta.get("XMP:CreatorTool") or meta.get("Info:CreatorTool") or ""
@@ -624,6 +659,7 @@ def delete_ai_metadata(path: str, et):
         "-XMP:FullAddress=",
         "-XMP:Location=",
         "-XMP:Description=",
+        "-XMP-aimedia:Transcript=",
         "-IPTC:Caption-Abstract=",
         "-XMP:FullAddress=",
         "-QuickTime:LocationName=",
@@ -633,5 +669,8 @@ def delete_ai_metadata(path: str, et):
         path
     )
     _restore_file_times(path, atime, mtime)
+    file_orig: Path = Path(f"{path}_original")
+    if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
+        file_orig.unlink()
 
 

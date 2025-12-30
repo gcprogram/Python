@@ -59,16 +59,16 @@ class AITools:
             try:
                 path = path / ('models--Salesforce--blip-image-captioning-base/snapshots'
                                '/82a37760796d32b1411fe092ab5d4e227313294b')
-                print("🖼️ Image2Text AI Model found locally. Initializing...")
+                log.info("🖼️ Image2Text AI Model found locally. Initializing...")
                 self.image_processor = BlipProcessor.from_pretrained(path)
                 self.image_model = BlipForConditionalGeneration.from_pretrained(path).to(self.device)
-                print("✅ Image2Text AI Model loaded into RAM is now ready.")
+                log.info("✅ Image2Text AI Model loaded into RAM is now ready.")
                 return
             except Exception:
                 # 🚨 GEÄNDERT: Behandelt unvollständiges Modell ohne Netz
-                print("⚠️ FATAL: Local Image2Text AI model incomplete or damaged (or new version): ", path)
-                print("   No network found therefore BLIP cannot be downloaded.")
-                print("   Delete the cache folder and restart.")
+                log.exception(f"⚠️ FATAL: Local Image2Text AI model incomplete or damaged (or new version): {path}")
+                log.warning("   No network found therefore BLIP cannot be downloaded.")
+                log.warning("   Delete the cache folder and restart.")
                 # Setzt die Modelle auf None, was später in generate_caption einen RuntimeError auslösen würde
                 self.image_processor = None
                 self.image_model = None
@@ -76,13 +76,12 @@ class AITools:
 
         # 🚨 Hinzugefügt: Online-Versuch nur mit Netz
         try:
-            print(f"🖼️ Image2Text AI model downloading ({self.IMAGE_MODEL_NAME})...")
+            log.info(f"🖼️ Image2Text AI model downloading ({self.IMAGE_MODEL_NAME})...")
             self.image_processor = BlipProcessor.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
             self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path).to(self.device)
-            print("🖼️ Image2Text model saved under:", path)
+            log.info("🖼️ Image2Text model saved under:", path)
         except Exception as e:
-            print(
-                f"❌ ERROR: Downloading Image2Text model: {e}")
+            log.exception(f"❌ ERROR: Downloading Image2Text model:")
             self.image_processor = None
             self.image_model = None
 
@@ -119,13 +118,13 @@ class AITools:
         # Standard-Whisper-Cachepfad
         if self.audio_model is not None:
             if self.audio_model_size_loaded == self.audio_model_size:
-                print("✅ Audio2Text AI Model already loaded into RAM is now ready")
+                log.info("✅ Audio2Text AI Model already loaded into RAM is now ready")
             else:
-                print("🗑️ Unloading Audio2Text AI Model...")
+                log.info("🗑️ Unloading Audio2Text AI Model...")
                 del self.audio_model
                 gc.collect()
                 if torch.cuda.is_available():
-                    print("🗑️ Deleting GPU cache")
+                    log.info("🗑️ Deleting GPU cache")
                     torch.cuda.empty_cache()
                 self.audio_model = None
                 self.audio_model_size_loaded = None
@@ -134,16 +133,16 @@ class AITools:
             cache_dir = os.path.join( Path.home(), ".cache", "whisper")
             model_filename = f"{audio_model_size}.pt"
             model_path = os.path.join(cache_dir, model_filename)
-            print(f"🎧 Audio2Text AI Model runs on {self.device_str.upper()}")
+            log.info(f"🎧 Audio2Text AI Model runs on {self.device_str.upper()}")
             if os.path.exists(model_path):
-                print(f"🎧 Audio2Text AI Model locally found ({model_path}). Initializing...")
+                log.info(f"🎧 Audio2Text AI Model locally found ({model_path}). Initializing...")
                 self.audio_model = whisper.load_model(model_path,device=self.device)
             else:
-                print("🎧  Audio2Text AI Model not found – Download started...")
+                log.info("🎧  Audio2Text AI Model not found – Download started...")
                 self.audio_model = whisper.load_model(audio_model_size, device=self.device)
-                print(f"🎧 Audio2Text AI Model saved locally under: {model_path}")
+                log.info(f"🎧 Audio2Text AI Model saved locally under: {model_path}")
 
-            print("✅ Audio2Text AI Model loaded into RAM is now ready")
+            log.info("✅ Audio2Text AI Model loaded into RAM is now ready")
 
     ###################################################################
     # Describe the image with BLIP AI model
@@ -195,13 +194,13 @@ class AITools:
 
             duration = clip.duration
             fmt_dur_mm_ss = format_time2mmss(duration)
-            print(f"🎞 Analyse Video: {relpath}, with {duration/interval:.0f} frames")
+            log.info(f"🎞 Analyse Video: {relpath}, with {duration/interval:.0f} frames")
             times = np.arange(0, duration, interval)
             last_caption = ""
             for t in times:
                 try:
                     fmt_mm_ss = format_time2mmss(t)
-                    print(f"  Frame {fmt_mm_ss}/{fmt_dur_mm_ss}")
+                    log.info(f"  Frame {fmt_mm_ss}/{fmt_dur_mm_ss}")
                     frame = clip.get_frame(t)
                     image = Image.fromarray(frame)
                     caption = self.describe_image(image)
@@ -209,11 +208,11 @@ class AITools:
                         captions.append(f"{fmt_mm_ss} {caption}")
                     last_caption = caption
                 except Exception as e:
-                    print("⚠️ ERROR: Frame extraction or Image description problem: ", e)
+                    log.exception("⚠️ ERROR: Frame extraction or Image description problem:")
                     continue
             clip.close()
         except Exception as e:
-            print("⚠️ ERROR: VideoClip problem: ", e)
+            log.exception("⚠️ ERROR: VideoClip problem: ")
             return f"⚠️ ERROR: VideoClip problem"
 
         # Kombinieren
@@ -229,7 +228,7 @@ class AITools:
 
         try:
             log.debug(f"transcribe_audio({os.path.basename(path)}): START")
-            result = self.audio_model.transcribe(audio=path, fp16=self.use_fp16)  # ignore model warning
+            result = self.audio_model.transcribe(audio=str(path), fp16=self.use_fp16)  # ignore model warning
             log.info(f"transcribe_audio({os.path.basename(path)})={result}")
             return result["text"].strip()
         except Exception as e:
