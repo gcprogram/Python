@@ -13,14 +13,14 @@ from tkinter import (
     Scrollbar, Checkbutton, IntVar, StringVar, Menu, Toplevel, Canvas, PhotoImage, END, BOTH, X, Y, RIGHT, BOTTOM, W
 )
 from tkinter import font as tkfont
-import math
 from tqdm import tqdm
 from PIL import Image, ImageTk, ExifTags
-import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
+from exiftool import ExifToolHelper
+#import exiftool  # Bester Allrounder, erfordert separate ExifTool-Installation!
 
 import media_tools
 from ai_tools import AITools
-from media_tools import _get_exif_data, _get_video_metadata, get_meta_data_bundle, get_kind_of_media, format_time2mmss, \
+from media_tools import get_meta_data_bundle, get_kind_of_media, format_time2mmss, \
     extract_mp3_front_cover, read_ai_metadata
 from moviepy.video.io.VideoFileClip import VideoFileClip
 
@@ -62,7 +62,7 @@ class MediaAnalyzerGUI:
     # ---------------- Menü ----------------
     #
     def create_menu(self):
-        log.info("Menu creating...")
+        log.debug("Menu creating...")
         menubar = Menu(self.root)
         filemenu = Menu(menubar, tearoff=0)
         filemenu.add_command(label="Bulk Load", command=self.choose_folder)
@@ -82,7 +82,7 @@ class MediaAnalyzerGUI:
         menubar.add_cascade(label="Help", menu=helpmenu)
         self.root.config(menu=menubar)
         self.root.update_idletasks()
-        log.info("Menu created.")
+        log.debug("Menu created.")
 
     def show_help_info(self):
         messagebox.showinfo("Was ist das?", "Mit dieser Anwendung kannst Du Deine Medienalben\n"
@@ -144,7 +144,7 @@ class MediaAnalyzerGUI:
         # ---------------- Layout / Konfiguration ----------------
     def create_top_controls(self):
         # Set default GUI variables
-        log.info("Top controls GUI creating...")
+        log.debug("Top controls GUI creating...")
         self.model_var = StringVar(value="large-v3")
         self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
         self.interval_var = StringVar(value="30")
@@ -152,6 +152,7 @@ class MediaAnalyzerGUI:
         self.save_csv_var = IntVar(value=1)
         self.save_xlsx_var = IntVar(value=1)
         self.save_tags_var = IntVar(value=0)
+        self.landmark_var = IntVar(value=1)         # Calculate nearest landmark, sightseeing point <300 m)
 
         # Create the config panel
         self.config_frame = Frame(self.root)
@@ -166,49 +167,50 @@ class MediaAnalyzerGUI:
             state="readonly", width=10
         )
         self.model_menu.bind("<<ComboboxSelected>>", self.on_whisper_model_change)
-        self.model_menu.grid(row=0, column=1, sticky=W, padx=5)
-        Checkbutton(self.config_frame, text="Save Transcripts", variable=self.save_transcript_var).grid(row=0, column=2, sticky=W)
+        self.model_menu.grid(row=0, column=1, sticky="W", padx=5)
+        Checkbutton(self.config_frame, text="Save Transcripts", variable=self.save_transcript_var).grid(row=0, column=2, sticky="W")
         self.create_gpu_status_widget()
 
         # --- Zeile 2: Video Analyse ---
-        Label(self.config_frame, text="⏱ Video Analyse Interval (sec):", font=("Arial", 11)).grid(row=1, column=0, sticky=W, padx=5)
-        ttk.Entry(self.config_frame, textvariable=self.interval_var, width=6).grid(row=1, column=1, sticky=W, padx=5)
-        Checkbutton(self.config_frame, text="Save Frames", variable=self.save_frames_var).grid(row=1, column=2, sticky=W)
+        Label(self.config_frame, text="⏱ Video Analyse Interval (sec):", font=("Arial", 11)).grid(row=1, column=0, sticky="W", padx=5)
+        ttk.Entry(self.config_frame, textvariable=self.interval_var, width=6).grid(row=1, column=1, sticky="W", padx=5)
+        Checkbutton(self.config_frame, text="Save Frames", variable=self.save_frames_var).grid(row=1, column=2, sticky="W")
 
         # --- Zeile 3: Ordner/File Wahl ---
-        Label(self.config_frame, text="📂 Analyse File/Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky=W, padx=5, pady=(10,0))
-        Button(self.config_frame, text="Folder select", command=self.choose_folder).grid(row=2, column=1, sticky=W, padx=5, pady=(10,0))
-        Button(self.config_frame, text="File select", command=self.choose_single_file).grid(row=2, column=2, sticky=W, padx=5, pady=(10, 0))
+        Label(self.config_frame, text="📂 Analyse File/Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky="W", padx=5, pady=(10,0))
+        Button(self.config_frame, text="Folder select", command=self.choose_folder).grid(row=2, column=1, sticky="W", padx=5, pady=(10,0))
+        Button(self.config_frame, text="File select", command=self.choose_single_file).grid(row=2, column=2, sticky="W", padx=5, pady=(10, 0))
         Button(self.config_frame, text="Delete AI tags", command=self.export_treeview_to_delete).grid(row=2, column=4,
-                                                                                                      sticky=W, padx=5,
+                                                                                                      sticky="W", padx=5,
                                                                                                       pady=(10, 0))
-        Button(self.config_frame, text="Save AI tags", command=self.export_treeview_to_files).grid(row=2, column=6, sticky=W, padx=5, pady=(10, 0))
+        Button(self.config_frame, text="Save AI tags", command=self.export_treeview_to_files).grid(row=2, column=5, sticky="W", padx=5, pady=(10, 0))
 
         # --- Zeile 4 - Fortschrittanzeige und Ergebnisspeicherung
         self.status_label = Label(self.config_frame, text="Status", font=("Arial", 10))
-        self.status_label.grid(row=3, column=0, sticky=W, padx=5, pady=(10, 0))
+        self.status_label.grid(row=3, column=0, sticky="W", padx=5, pady=(10, 0))
         self.status_label2 = Label(self.config_frame, text="Fortschritt:", font=("Arial", 10))
-        self.status_label2.grid(row=3, column=1, sticky=W, padx=5, pady=(10, 0))
+        self.status_label2.grid(row=3, column=1, sticky="W", padx=5, pady=(10, 0))
         self.progress = ttk.Progressbar(self.config_frame, orient="horizontal", length=400, mode="determinate")
-        self.progress.grid(row=3, column=2, sticky=W, padx=5, pady=(10,0))
+        self.progress.grid(row=3, column=2, sticky="W", padx=5, pady=(10,0))
 
-        Checkbutton(self.config_frame, text="Save CSV", variable=self.save_csv_var).grid(row=3, column=4, sticky=W)
-        Checkbutton(self.config_frame, text="Save Excel", variable=self.save_xlsx_var).grid(row=3, column=5, sticky=W)
-        Checkbutton(self.config_frame, text="Save AI Tags (Files)", variable=self.save_tags_var).grid(row=3, column=6, sticky=W)
+        Checkbutton(self.config_frame, text="Save CSV", variable=self.save_csv_var).grid(row=3, column=3, sticky="W")
+        Checkbutton(self.config_frame, text="Save Excel", variable=self.save_xlsx_var).grid(row=3, column=4, sticky="W")
+        Checkbutton(self.config_frame, text="Save AI Tags (Files)", variable=self.save_tags_var).grid(row=3, column=5, sticky="W")
+        Checkbutton(self.config_frame, text="Search Landmarks", variable=self.landmark_var).grid(row=1, column=2, sticky="E")
         self.root.update_idletasks()
-        log.info("Top controls GUI created.")
+        log.debug("Top controls GUI created.")
 
     # ---------------- Tabelle ----------------
     def create_table(self):
-        log.info("Table view creating...")
+        log.debug("Table view creating...")
         table_frame = Frame(self.root)
         table_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Image", "Audio")
+        cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Landmark", "Image", "Audio")
         self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=20)
         for col in cols:
             self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c, False))
-            width = {"File": 105, "Type": 35, "Date": 100, "Lat":55, "Lon":55, "Length": 50, "Address": 150, "Image": 250, "Audio": 250}.get(col, 100)
+            width = {"File": 105, "Type": 35, "Date": 100, "Lat":55, "Lon":55, "Length": 50, "Address": 150, "Landmark": 150, "Image": 250, "Audio": 250}.get(col, 100)
             self.tree.column(col, width=width, anchor="w")
 
         self.setup_click_play()
@@ -237,7 +239,7 @@ class MediaAnalyzerGUI:
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
         self.root.update_idletasks()
-        log.info("Table view created.")
+        log.debug("Table view created.")
     #
     # Reads data from TreeView.
     #
@@ -299,13 +301,14 @@ class MediaAnalyzerGUI:
         headers, rows = self.get_treeview_data(self.tree)
 
          # Daten
-        with exiftool.ExifTool() as et:
+        with ExifToolHelper(encoding="utf-8") as et:
             for row in rows:
                 a = list(row)
                 address:str = a[6]
-                image_text = a[7]
-                audio_text = a[8]
-                media_tools.write_ai_metadata(os.path.join(self.folder, a[0]), address,image_text,audio_text,et )
+                landmark:str = a[7]
+                image_text = a[8]
+                audio_text = a[9]
+                media_tools.write_ai_metadata(self.folder / a[0], address,landmark, image_text,audio_text,et )
 
     #
     # Delete AI tags from shown Images, Videos and Audio in TreeView
@@ -314,7 +317,7 @@ class MediaAnalyzerGUI:
         headers, rows = self.get_treeview_data(self.tree)
 
          # Daten
-        with exiftool.ExifToolHelper() as et:
+        with ExifToolHelper(encoding="utf-8") as et:
             for row in rows:
                 a = list(row)
                 media_tools.delete_ai_metadata(os.path.join(self.folder, a[0]), et)
@@ -455,17 +458,17 @@ class MediaAnalyzerGUI:
         # Relativer Pfad/Dateiname ist in Spalte 0 (Datei)
         filename = values[0]
         # Die Textfelder sind in Spalte 7 (Beschreibung) und 8 (Transkript) - tree columns sind 1-indexed (#1..)
-        desc_col = "#8"
-        text_col = "#9"
+        desc_col = "#9"
+        text_col = "#10"
 
         # Wenn über Dateispalte -> Thumbnail anzeigen
         if col == "#1":
             # Verstecke Text-Tooltip, falls sichtbar
             self.hide_text_tooltip()
 
-            folder = getattr(self, "current_folder", getattr(self, "folder", ""))
-            path = os.path.join(folder, filename)
-            if not os.path.exists(path):
+            folder = Path(getattr(self, "current_folder", getattr(self, "folder", "")))
+            path = folder / filename
+            if not path.exists():
                 self.hide_thumbnail()
                 return
 
@@ -497,12 +500,12 @@ class MediaAnalyzerGUI:
             # Den kompletten Text aus der jeweiligen Spalte holen
             # tree.set benötigt den item id und die column name (hier nutzen wir index via values)
             # values ist ein tuple entsprechend der Spaltenreihenfolge
-            # Beschreibung = values[7], Transkript = values[8]
+            # Beschreibung = values[8], Transkript = values[9]
             try:
                 if col == desc_col:
-                    full_text = values[7] or ""
-                else:
                     full_text = values[8] or ""
+                else:
+                    full_text = values[9] or ""
             except Exception:
                 full_text = ""
 
@@ -672,15 +675,15 @@ class MediaAnalyzerGUI:
         if not row_id:
             return
         values = self.tree.item(row_id, "values")
-        filename = values[0]
+        filename = Path(values[0])
         folder = self.folder
-        path = os.path.join(folder, filename)
-        if os.path.exists(path) and filename.lower().endswith((".mp4", ".mov", ".avi")):
+        path = folder / filename
+        if path.exists() and (filename.suffix.lower() in ["mp4", "mov", "avi"]):
             # Standard Video-Player öffnen
             if os.name == "nt":  # Windows
                 os.startfile(path)
             elif os.name == "posix":  # macOS/Linux
-                print("masOS, Linux Playback not implemented yet")
+                log.warning("masOS, Linux Playback not implemented yet")
                 #subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", path])
 
     def set_process(self, value):
@@ -700,18 +703,18 @@ class MediaAnalyzerGUI:
 
     # ---------------- Analyse ----------------
     def choose_folder(self):
-        self.folder = filedialog.askdirectory(title="Verzeichnis wählen")
+        self.folder = Path(filedialog.askdirectory(title="Verzeichnis wählen"))
         if self.folder:
             self.current_folder = self.folder
             threading.Thread(target=self.analyze_folder, args=(self.folder,), daemon=True).start()
 
     def choose_single_file(self):
-        file = filedialog.askopenfilename(
+        file:Path = Path(filedialog.askopenfilename(
             title="Datei wählen",
             filetypes=[("Medien", "*.jpg *.jpeg *.png *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac"), ("Alle Dateien", "*.*")]
-        )
+        ))
         if file:
-            self.folder = os.path.dirname(file)
+            self.folder = file.parent
             self.current_folder = self.folder
             threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
 
@@ -732,6 +735,9 @@ class MediaAnalyzerGUI:
 
         interval = int(self.interval_var.get())
 
+        if isinstance(file_path, Path):
+            file_path = Path(file_path)
+
         if os.path.isdir(file_path):
             # Erzeuge eine Liste von Dateipfaden für alle Dateien im Verzeichnis
             folder = file_path
@@ -743,7 +749,7 @@ class MediaAnalyzerGUI:
         else:
             # Bei ungültigem Pfad kann hier ein Fehler ausgelöst oder behandelt werden
             all_files = []
-            print("Der angegebene Pfad ist weder eine Datei noch ein Verzeichnis.")
+            log.warning("Der angegebene Pfad ist weder eine Datei noch ein Verzeichnis.")
             return
 
         total = len(all_files)
@@ -752,50 +758,51 @@ class MediaAnalyzerGUI:
         self.root.update_idletasks()
 
         self.status_label.config(text=f"🔍 Analysiere {total} Dateien...")
-
-        with exiftool.ExifTool() as et:
+        with ExifToolHelper(encoding="utf-8") as et:
 
             self.transcripts_missing = 0
             transcripts_cnt = 0
             transcripts_duration = 0
             for i, path in enumerate(tqdm(all_files, desc="Analysiere")):
                 # Startzeit
-                start_time = time.time()
-                kind = get_kind_of_media(path)
+                #start_time = time.time()
+                if isinstance(path, str):
+                    p = Path(path)
+                kind = get_kind_of_media(p)
                 if kind == "unknown":
                     self.progress["value"] = i + 1
                     continue
-                relpath = os.path.relpath(path, folder)
-                rec = {"File": relpath, "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Image": "", "Audio": ""}
+                relpath = os.path.relpath(p, folder)
+                rec = {"File": relpath, "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark": "", "Image": "", "Audio": ""}
                 item_id = self.tree.insert("", "end", values=tuple(rec.values()))
                 image_text = ""
                 audio_text = ""
                 try:
-                    meta = get_meta_data_bundle(path, et_instance=et)
+                    meta_ai = read_ai_metadata(p, et)
+                    meta = get_meta_data_bundle(p, meta_ai, et_instance=et)
                     rec["Date"] = meta.get("Date", "")
-                    rec["Address"] = meta.get("Address", "")
                     rec["Lat"] = meta.get("Lat", "")
                     rec["Lon"] = meta.get("Lon", "")
                     rec["Length"] = meta.get("Length", "")
+                    rec["Address"] = meta.get("Address", "")
+                    rec["Landmark"] = meta.get("Landmark", "")
 
                     self._update_tree_columns(item_id, rec)
 
-                    meta_ai = read_ai_metadata(path, et)
-                    address:str = meta_ai.get("address", "")
                     image_text:str = meta_ai.get("caption", "")
                     audio_text:str = meta_ai.get("transcript", "")
                     if len(image_text) < 4:
                         # Mache Image Beschreibung sofort
                         if kind == "image":
-                            image_text = self.aitools.describe_image(path)
+                            image_text = self.aitools.describe_image(p)
                         elif kind == "video":
                             # Das ist aufwendiger: Video zerlegen in Einzelbilder, alle %interval%s Sekunden.
-                            image_text = self.aitools.describe_video_by_frames(path, interval)
+                            image_text = self.aitools.describe_video_by_frames(p, interval)
                             if self.save_frames_var.get():
-                                self._save_video_frames(path, interval)
+                                self._save_video_frames(p, interval)
                         elif kind == "audio" and len(audio_text) < 4:
-                            print("Versuche Bild aus Audio zu extrahieren")
-                            image = extract_mp3_front_cover(path)
+                            log.info("Versuche Bild aus Audio zu extrahieren")
+                            image = extract_mp3_front_cover(p)
                             if image is None:
                                 log.warning(f"{relpath} has no image")
                                 image_text = ""
@@ -814,11 +821,11 @@ class MediaAnalyzerGUI:
                             self.transcripts_missing += 1
                             transcripts_cnt += 1
                             transcripts_duration:int = transcripts_duration+ int(rec["Length"])
-                            self._run_ai_analysis(path, kind, item_id, image_text, float(rec["Length"]))
+                            self._run_ai_analysis(p, kind, item_id, image_text, float(rec["Length"]))
 
 
                 except Exception as e:
-                    print("⚠️ Fehler bei:", path, e)
+                    log.exception(f"⚠️ Fehler bei: {p}: ")
 
                 self.progress["value"] = i + 1
                 self.root.update_idletasks()
@@ -889,15 +896,13 @@ class MediaAnalyzerGUI:
         while True:
             job = self.audio_queue.get()
             if job is None:
-                print("_audio_worker_loop(): No audio work to do")
+                log.info("AUDIT2TEXT has nothing to do.")
                 break  # sauberer Shutdown
 
             path, kind, item_id, image_text, duration = job
             audio_text = ""
             try:
-
                 audio_text = self.aitools.transcribe_audio(path)
-                print(f"_audio_worker_loop(): {os.path.basename(path)}\n{audio_text}")
                 if self.save_transcript_var.get():
                     text = f"\"{audio_text}\"\n\n{image_text.translate(str.maketrans('|', '\n'))}"
                     with open(f"{path}.txt", "w", encoding="utf-8") as f:
@@ -918,7 +923,7 @@ class MediaAnalyzerGUI:
 
     def _update_tree_ai_columns(self, item_id, audio_text):
         values = list(self.tree.item(item_id, "values"))
-        values[8] = audio_text
+        values[9] = audio_text
         self.tree.item(item_id, values=values)
 
         # Fortschritt
@@ -945,9 +950,9 @@ class MediaAnalyzerGUI:
         values = list(self.tree.item(item_id, "values"))
 
         # Spaltenindex:
-        # 0 File | 1 Type | 2 Date | 3 Lat | 4 Lon | 5 Length | 6 Address | 7 Image | 8 Audio
+        # 0 File | 1 Type | 2 Date | 3 Lat | 4 Lon | 5 Length | 6 Address | 7 Landmark | 8 Image | 9 Audio
         if audio_text:
-            values[8] = audio_text
+            values[9] = audio_text
 
         self.tree.item(item_id, values=values)
 
@@ -971,7 +976,9 @@ class MediaAnalyzerGUI:
         else:
             values[5] = ""
         values[6] = rec["Address"]
-        values[7] = rec["Image"]
+        values[7] = rec["Landmark"]
+        values[8] = rec["Image"]
+        values[9] = rec["Audio"]
         self.tree.item(item_id, values=values)
 
 
