@@ -31,10 +31,10 @@ log = logging.getLogger(__name__)
 
 class MediaAnalyzerGUI:
     def __init__(self, root):
-        log.info("Starting Media Analyzer...")
+        log.info("Starting AI Media Analyzer...")
         self.root = root
-        self.root.title("🧭 Medien Analyse")
-        self.root.geometry("1200x750")
+        self.root.title("🧭 AI Media Analysis")
+        self.root.geometry("1200x600")
         # Cache für Thumbnail-Pfade
         self._last_thumb_path = None
         self._last_thumb_image = None
@@ -49,6 +49,7 @@ class MediaAnalyzerGUI:
         self.save_xlsx_var = IntVar(value=1)
         self.save_tags_var = IntVar(value=0)
         self.landmark_var = IntVar(value=1)  # Calculate nearest landmark, sightseeing point <300 m)
+        self.face_db_dir:Path = Path("C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT")
 
         self.create_menu()
         self.create_top_controls()
@@ -83,6 +84,8 @@ class MediaAnalyzerGUI:
         helpmenu.add_command(label="Info BLIP", command=self.show_help_blip)
         helpmenu.add_command(label="Info WHISPER", command=self.show_help_whisper)
         helpmenu.add_command(label="Info GPU", command=self.show_help_gpu)
+        helpmenu.add_command(label="Info Nominatim", command=self.show_help_nominatim)
+        helpmenu.add_command(label="Info Face Ident", command=self.show_help_face_ident)
         helpmenu.add_separator()
         helpmenu.add_command(label="Info", command=self.show_info)
         menubar.add_cascade(label="Help", menu=helpmenu)
@@ -107,7 +110,7 @@ class MediaAnalyzerGUI:
 
     @staticmethod
     def show_help_blip():
-        messagebox.showinfo("Info", "Die Offline KI BLIP macht kurze Bildbeschreibungen.\n" 
+        messagebox.showinfo("Image2Text Info", "Die Offline KI BLIP macht kurze Bildbeschreibungen.\n" 
             "Man kann die maximale Anzahl Tokens anpassen, aber in der Realität verändert sich nicht viel.\n"
             "Voreinstellung hier ist 100.\n"
             "\nBLIP  wurde von Salesforce Research entwickelt und\n"
@@ -116,7 +119,7 @@ class MediaAnalyzerGUI:
 
     @staticmethod
     def show_help_whisper():
-        messagebox.showinfo("Info", "Die Offline KI Whisper transkribiert Audios.\n" 
+        messagebox.showinfo("Audio2Text Info", "Die Offline KI Whisper transkribiert Audios.\n" 
             "️Mögliche Whisper-Modelle zur Auswahl:\n"
             "Name	Größe (RAM)	Geschwindigkeit	Genauigkeit	Bemerkung\n"
             "tiny\t	~75 MB	\t⚡ Sehr schnell	\t😐 Gering	Nur für sehr saubere, kurze Audios ohne Akzent\n"
@@ -130,7 +133,7 @@ class MediaAnalyzerGUI:
 
     @staticmethod
     def show_help_gpu():
-        messagebox.showinfo("Info",
+        messagebox.showinfo("GPU Info",
             "For using the GPU power of your graphic card for the AI models,\n"
             "you may need to install torch, see below.\n"
             "The models are also usable on a standard CPU.\n"
@@ -142,6 +145,28 @@ class MediaAnalyzerGUI:
             "   --index-url https://download.pytorch.org/whl/cu121\n"
             "Maybe cu118 or cu123 works better on your PC."
         )
+
+    @staticmethod
+    def show_help_nominatim():
+        messagebox.showinfo("Nominatim Info",
+            "This module lets you identify sightseeing or other spots.\n"
+            "This module uses Nominatim from OpenStreetMaps.org.\n"
+            "For each photo and videos with GPS coordinates a web request is done.\n"
+            "It returns a landmark name or 'None'\n"
+        )
+
+
+    @staticmethod
+    def show_help_face_ident():
+        messagebox.showinfo("Face Recognition Info",
+            "This module lets you identify persons on your photos/videos.\n"
+            "You need to create a directory with folders named like the persons' names.\n"
+            "In each folder is at least one picture of the person.\n"
+            "When starting the first time, all photos will be scanned and trained.\n"
+            "With unchanged folders, Face Ident will start faster next time.\n"
+            "The face recognition is done on your PC. Nothing is send to the internet.\n\n"
+        )
+
 
     @staticmethod
     def show_info():
@@ -184,6 +209,8 @@ class MediaAnalyzerGUI:
         Label(self.config_frame, text="📂 Analyse File/Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky="W", padx=5, pady=(10,0))
         Button(self.config_frame, text="Folder select", command=self.choose_folder).grid(row=2, column=1, sticky="W", padx=5, pady=(10,0))
         Button(self.config_frame, text="File select", command=self.choose_single_file).grid(row=2, column=2, sticky="W", padx=5, pady=(10, 0))
+        Button(self.config_frame, text="FaceDB select", command=self.choose_facedb).grid(row=2, column=2, sticky="E",
+                                                                                            padx=5, pady=(10, 0))
         Button(self.config_frame, text="Delete AI tags", command=self.export_treeview_to_delete).grid(row=2, column=4,
                                                                                                       sticky="W", padx=5,
                                                                                                       pady=(10, 0))
@@ -200,7 +227,6 @@ class MediaAnalyzerGUI:
         Checkbutton(self.config_frame, text="Save CSV", variable=self.save_csv_var).grid(row=3, column=3, sticky="W")
         Checkbutton(self.config_frame, text="Save Excel", variable=self.save_xlsx_var).grid(row=3, column=4, sticky="W")
         Checkbutton(self.config_frame, text="Save AI Tags (Files)", variable=self.save_tags_var).grid(row=3, column=5, sticky="W")
-        Checkbutton(self.config_frame, text="Search Landmarks", variable=self.landmark_var).grid(row=1, column=2, sticky="E")
         self.root.update_idletasks()
         log.debug("Top controls GUI created.")
 
@@ -338,7 +364,7 @@ class MediaAnalyzerGUI:
         gpu_available, gpu_name = self.get_gpu_status()
 
         if gpu_available:
-            text = f"GPU: {gpu_name} | CUDA aktiv"
+            text = f"{gpu_name} aktiv"
             style = "GpuActive.TLabel"
         else:
             text = "GPU: nicht verfügbar – CPU-Modus"
@@ -707,6 +733,12 @@ class MediaAnalyzerGUI:
             self.tree.move(k, '', index)
         self.tree.heading(col, command=lambda: self.sort_column(col, not reverse))
 
+    # Face ID folder (directory with subdirectories named like the persons which are stored in the subdirectories
+    def choose_facedb(self):
+        self.face_db_dir = Path(filedialog.askdirectory(title="FaceDB wählen"))
+        if self.face_db_dir:
+            threading.Thread(target=self.analyze_faces, args=(self.face_db_dir,), daemon=True).start()
+
     # ---------------- Analyse ----------------
     def choose_folder(self):
         self.folder = Path(filedialog.askdirectory(title="Verzeichnis wählen"))
@@ -724,6 +756,13 @@ class MediaAnalyzerGUI:
             self.current_folder = self.folder
             threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
 
+    #
+    # Analyses all persons in the FaceDB.
+    #
+    def analyze_folder(self, file_path: Path):
+        self.status_label.config(text="📦 Lade FaceDB...")
+        self.root.update_idletasks()
+        self.status_label.config(text="📦 FaceDB ready")
     #
     # Hauptroutine liest files vom file_path und füllt die Tabelle.
     #
