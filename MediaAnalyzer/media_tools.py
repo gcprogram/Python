@@ -60,6 +60,7 @@ def _get_audio_duration(file_path):
             return f"Fehler: Unbekanntes oder beschädigtes Format: {file_path}"
 
     except Exception as e:
+        log.exception("_get_audio_duration({file_path}):")
         return f"Fehler beim Lesen der Datei {file_path}: {e}"
 
 ############################################

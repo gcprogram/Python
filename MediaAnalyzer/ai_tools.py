@@ -31,7 +31,7 @@ class AITools:
     sowie zur Generierung von Bild- und Video-Untertiteln.
     """
 
-    DEFAULT_IMAGE_MODEL_PATH = Path.home() / ".cache/huggingface/hug"
+    DEFAULT_IMAGE_MODEL_PATH = Path.home() / ".cache/huggingface/hub"
     IMAGE_MODEL_NAME = "Salesforce/blip-image-captioning-base"
     AUDIO_MODEL_PATH = Path.home() / ".cache/whisper/"
 

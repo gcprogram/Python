@@ -43,13 +43,13 @@ class MediaAnalyzerGUI:
         # GUI defaults:
         self.model_var = StringVar(value="large-v3")
         self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
-        self.interval_var = StringVar(value="30")
+        self.interval_var = StringVar(value="20")
         self.save_frames_var = IntVar(value=0)
         self.save_csv_var = IntVar(value=1)
         self.save_xlsx_var = IntVar(value=1)
-        self.save_tags_var = IntVar(value=0)
+        self.save_tags_var = IntVar(value=1)
         self.landmark_var = IntVar(value=1)  # Calculate nearest landmark, sightseeing point <300 m)
-        self.face_db_dir:Path = Path("C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT")
+        self.face_db_dir:Path = Path("C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT/personen_db")
 
         self.create_menu()
         self.create_top_controls()
