@@ -35,11 +35,14 @@ class FaceIdentifier:
 
 
 # --- Integration in dein Projekt ---
-identifier = FaceIdentifier(db_path="C:/dein_pfad/personen_db")
+FACE_IDENT_DB="C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT/personen_db"
+identifier = FaceIdentifier(db_path=FACE_IDENT_DB)
 
 # Beispiel für ein Foto (Punkt 4)
-personen = identifier.identify_persons("urlaub.jpg")
-print(f"Auf dem Bild sind: {personen}")
+personen = identifier.identify_persons(FACE_IDENT_DB+"/../foto1.jpg")
+print(f"Auf dem Bild foto1 sind: {personen}")
+personen = identifier.identify_persons(FACE_IDENT_DB+"/../foto2.jpg")
+print(f"Auf dem Bild foto2 sind: {personen}")
 
 # Beispiel für dein Video-Loop (Punkt 5)
 # Du extrahierst alle 30s ein Frame 'frame_30s.jpg'
