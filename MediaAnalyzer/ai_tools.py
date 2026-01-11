@@ -38,6 +38,7 @@ class AITools:
     def __init__(self, audio_model_size:str="large-v3"):
         self.device_str = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(self.device_str)
+        self.use_fp16 = (self.device_str == "cuda")
 
         # BLIP
         self.image_processor = None
@@ -50,7 +51,6 @@ class AITools:
         self.audio_model_size_loaded = None
         self._load_image_model(self.DEFAULT_IMAGE_MODEL_PATH)
         self._load_audio_model(audio_model_size)
-        self.use_fp16 = (self.device_str == "cuda")
 
     # ------------------ MODELLE LADEN ------------------
     def _load_image_model(self, path):
@@ -61,7 +61,10 @@ class AITools:
                                '/82a37760796d32b1411fe092ab5d4e227313294b')
                 log.info("🖼️ Image2Text AI Model found locally. Initializing...")
                 self.image_processor = BlipProcessor.from_pretrained(path)
-                self.image_model = BlipForConditionalGeneration.from_pretrained(path).to(self.device)
+                if self.use_fp16:
+                    self.image_model = BlipForConditionalGeneration.from_pretrained(path,torch_dtype=torch.float16).to(self.device)
+                else:
+                    self.image_model = BlipForConditionalGeneration.from_pretrained(path).to(self.device)
                 log.info("✅ Image2Text AI Model loaded into RAM is now ready.")
                 return
             except Exception:
@@ -78,7 +81,12 @@ class AITools:
         try:
             log.info(f"🖼️ Image2Text AI model downloading ({self.IMAGE_MODEL_NAME})...")
             self.image_processor = BlipProcessor.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path)
-            self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path).to(self.device)
+            if self.use_fp16:
+                self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path, torch_dtype=torch.float16).to(self.device)
+            else:
+                self.image_model = BlipForConditionalGeneration.from_pretrained(self.IMAGE_MODEL_NAME, cache_dir=path).to(self.device)
+
+            #  float16 (schneller auf GPU)
             log.info("🖼️ Image2Text model saved under:", path)
         except Exception as e:
             log.exception(f"❌ ERROR: Downloading Image2Text model:")
@@ -141,6 +149,8 @@ class AITools:
                 log.info("🎧  Audio2Text AI Model not found – Download started...")
                 self.audio_model = whisper.load_model(audio_model_size, device=self.device)
                 log.info(f"🎧 Audio2Text AI Model saved locally under: {model_path}")
+            if self.use_fp16:
+               self.audio_model.half()  # Konvertiert zu float16 (schneller auf GPU)
 
             log.info("✅ Audio2Text AI Model loaded into RAM is now ready")
 
