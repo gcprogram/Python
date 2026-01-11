@@ -12,6 +12,7 @@ class FaceIdentifier:
 
     def identify_persons(self, image_path):
         """Erkennt alle Personen auf einem Bild und gibt eine Liste der Namen zurück."""
+        """TODO: Video analyse"""
         try:
             # enforce_detection=False verhindert Abstürze, wenn kein Gesicht gefunden wird
             results = DeepFace.find(img_path=image_path,
