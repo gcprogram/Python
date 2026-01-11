@@ -39,7 +39,7 @@ class MediaAnalyzerGUI:
         self._last_thumb_path = None
         self._last_thumb_image = None
         self._model_loading = False
-        self.folder:Path = None
+        self.folder:Path = Path(Path.home() / 'Pictures')
         # GUI defaults:
         self.model_var = StringVar(value="large-v3")
         self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
@@ -759,10 +759,11 @@ class MediaAnalyzerGUI:
     #
     # Analyses all persons in the FaceDB.
     #
-    def analyze_folder(self, file_path: Path):
+    def analyze_persons(self, file_path: Path):
         self.status_label.config(text="📦 Lade FaceDB...")
         self.root.update_idletasks()
         self.status_label.config(text="📦 FaceDB ready")
+        # TODO
     #
     # Hauptroutine liest files vom file_path und füllt die Tabelle.
     #
@@ -830,11 +831,22 @@ class MediaAnalyzerGUI:
                     rec["Length"] = meta.get("Length", "")
                     rec["Address"] = meta.get("Address", "")
                     rec["Landmark"] = meta.get("Landmark", "")
-
-                    self._update_tree_columns(item_id, rec)
-
                     image_text:str = meta_ai.get("caption", "")
                     audio_text:str = meta_ai.get("transcript", "")
+                    self._update_tree_columns(item_id, rec)
+
+                    if not rec["Address"]:
+                        if rec["Lat"] and rec["Lon"]:
+                            rec["Address"], rec["Landmark"] = media_tools.reverse_geocode(float(rec["Lat"]), float(rec["Lon"]))
+                    if not rec["Landmark"]:
+                        if rec["Lat"] and rec["Lon"]:
+                            rec["Landmark"] = media_tools.get_nearest_landmark(float(rec["Lat"]), float(rec["Lon"]), radius=500)
+
+                    if rec["Lat"] and rec["Lon"] and not rec["Landmark"]:
+                        log.info(f"Lat: {rec['Lat']}, Lon: {rec['Lon']}")
+                        rec["Landmark"] = self.landmark_finder.resolve(float(rec["Lat"]), float(rec["Lon"]),5)
+                        log.info(f"landmark_finder={rec['Landmark']}")
+                        self._update_tree_columns(item_id, rec)
                     if len(image_text) < 4:
                         # Mache Image Beschreibung sofort
                         if kind == "image":
