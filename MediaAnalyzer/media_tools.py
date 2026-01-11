@@ -13,12 +13,13 @@ from moviepy.video.io.VideoFileClip import VideoFileClip  # <- korrigierter Impo
 from typing import Tuple, Dict, Any
 # Metadaten-Bibliotheken
 from PIL import Image  # Für JPEGs/PNGs (Exif)
-from exiftool import ExifToolHelper # Bester Allrounder, erfordert separate ExifTool-Installation!
-
+import exiftool  # Damit 'exiftool.exceptions' erkannt wird
+from exiftool import ExifToolHelper  # Bester Allrounder, erfordert separate ExifTool-Installation!
 from mutagen import File
 from mutagen.wave import WAVE
 from mutagen.id3 import ID3, APIC
 import logging
+import requests
 
 from location_tools import NearbyLandmarkResolver
 
@@ -212,11 +213,8 @@ def get_meta_data_bundle(path: Path, meta_ai:dict, et_instance: object = None) -
         res["Lat"] = ""
         res["Lon"] = ""
         res["Length"] = _get_audio_duration(path)
-        res["Address"] = meta_ai.get("Address")
-        res["Landmark"] = meta_ai.get("Landmark")
-    if res["Address"] == "" and res["Landmark"] =="":
-        if res["Lat"] != "" and res["Lon"] != "":
-            res["Address"], res["Landmark"] = reverse_geocode(float(res["Lat"]), float(res["Lon"]))
+    res["Address"] = meta_ai.get("Address")
+    res["Landmark"] = meta_ai.get("Landmark")
     return res
 
 def _get_exif_data(path: Path) -> Dict[str, Any]:
@@ -434,38 +432,59 @@ def format_time2mmss(sekunden: float) -> str:
 # {'road': 'Rue de la Grande Borne', 'village': 'Le Mesnil-Amelot', 'municipality': 'Meaux', 'county': 'Seine-et-Marne', 'ISO3166-2-lvl6': 'FR-77', 'region': 'Metropolitanes Frankreich', 'postcode': '77990', 'country': 'Frankreich', 'country_code': 'fr'}
 ###########################################################
 
-def reverse_geocode(lat, lon):
+def reverse_geocode(lat:float, lon:float):
     """Wandelt Koordinaten in einen Ortsnamen um (Nominatim - uses OpenStreetMap)."""
     if not lat or not lon:
         return ""
     loc: str = ""
-    resolver = NearbyLandmarkResolver()
-    landmark:str = resolver.resolve(lat, lon)
     try:
         geolocator = Nominatim(user_agent="AI MediaAnalyzer")
         location = geolocator.reverse((lat, lon), language="de", timeout=10)
         if location and location.address:
-            # z. B. nur Stadt oder Land extrahieren
-            parts = location.raw.get("address", {})
-            # parts contains a lot of address data
-            # pts = [parts.get("postcode"), parts.get("city"), parts.get("town"), parts.get("village"), parts.get("state"), parts.get("country")]
-            # In order to make address not too long, collect only a few parts:
-            # Part 1: Road
-            loc += parts.get("road")
-            if len(loc) > 0:
-                loc += ", "
-            # Part2: City, town, village, state, municipality, or region
-            loc += parts.get("city") or parts.get("town") or parts.get("village") or \
-                   parts.get("state") or parts.get("municipality") or parts.get("region")
-            # Part 3: country
-            if len(loc) > 0:
-                loc += ", "
-            loc += parts.get("country")
+            loc =  location.raw.get("name") or location.raw.get("display_name")
+            landmark: str = location.raw.get("tourism") or location.raw.get("historic") or location.raw.get(
+                "amenity") or location.raw.get("leisure")
+            if loc or landmark:
+                return loc, landmark
+            else:
+                # z. B. nur Stadt oder Land extrahieren
+                parts = location.raw.get("address", {})
+                # parts contains a lot of address data
+                # pts = [parts.get("postcode"), parts.get("city"), parts.get("town"), parts.get("village"), parts.get("state"), parts.get("country")]
+                # In order to make address not too long, collect only a few parts:
+                # Part 1: Road
+                loc += parts.get("road")
+                if len(loc) > 0:
+                    loc += ", "
+                # Part2: City, town, village, state, municipality, or region
+                loc += parts.get("city") or parts.get("town") or parts.get("village") or \
+                       parts.get("state") or parts.get("municipality") or parts.get("region")
+                # Part 3: country
+                if len(loc) > 0:
+                    loc += ", "
+                loc += parts.get("country")
             return loc, landmark
     except Exception:
-        return "",""
-    return "",""
+        log.exception("reverse_geocode() Exception Nominatim")
+    return "",None
 
+
+def get_nearest_landmark(lat:float, lon:float, radius=500):
+    # Query: Suche im Radius um lat/lon nach "tourism"-Tags
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json];
+    node["tourism"](around:{radius},{lat},{lon});
+    out body;
+    """
+    response = requests.get(overpass_url, params={'data': overpass_query})
+    data = response.json()
+
+    if data['elements']:
+        # Das erste gefundene Element zurückgeben
+        log.debug(f"Found {len(data['elements'])} nearest landmarks")
+        return data['elements'][0].get('tags', {}).get('name', 'Unbekannte Landmark')
+    return "None"
 
 def extract_mp3_front_cover(mp3_path):
     try:
@@ -588,7 +607,8 @@ def write_ai_metadata(
         if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
             file_orig.unlink()
 
-    except Exception:
+    except exiftool.exceptions.ExifToolExecuteError as e:
+        log.error(f"ExifTool Error: {e.stderr}")  # Das hier verrät den echten Grund!
         log.exception("write_ai_metadata(): ")
 
 #
@@ -666,6 +686,8 @@ def delete_ai_metadata(path: Path, et):
     )
     _restore_file_times(path, atime, mtime)
     file_orig: Path = Path(f"{path}_original")
+    log.debug(f"path: {path}")
+    log.debug(f"Original file: {file_orig}")
     if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
         file_orig.unlink()
 
