@@ -1,7 +1,6 @@
 import os
 import csv
 import threading
-import queue
 from pathlib import Path
 import torch
 from openpyxl import Workbook
@@ -14,13 +13,16 @@ from tkinter import font as tkfont
 from tqdm import tqdm
 from PIL import Image, ImageTk, ExifTags
 from exiftool import ExifToolHelper
-import media_tools
-from ai_tools import AITools
-from media_tools import get_meta_data_bundle, get_kind_of_media, format_time2mmss, \
-    extract_mp3_front_cover, read_ai_metadata
 from moviepy.video.io.VideoFileClip import VideoFileClip
-
 import logging
+
+# Own Program parts:
+import media_tools
+from ai_audio import AIAudio
+from ai_image import AIImage
+from ai_face import AIFace
+from media_tools import get_meta_data_bundle, get_kind_of_media, \
+    extract_mp3_front_cover, read_ai_metadata
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +32,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 class MediaAnalyzerGUI:
+
     def __init__(self, root):
         log.info("Starting AI Media Analyzer...")
         self.root = root
@@ -48,6 +51,7 @@ class MediaAnalyzerGUI:
         self.save_csv_var = IntVar(value=1)
         self.save_xlsx_var = IntVar(value=1)
         self.save_tags_var = IntVar(value=1)
+        self.ai_faces_var = IntVar(value=1)
         self.landmark_var = IntVar(value=1)  # Calculate nearest landmark, sightseeing point <300 m)
         self.face_db_dir:Path = Path("C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT/personen_db")
 
@@ -55,16 +59,17 @@ class MediaAnalyzerGUI:
         self.create_top_controls()
         self.create_table()
         self._init_styles()
-        log.info("AI Models loading...")
-        self.aitools = AITools(audio_model_size=self.model_var.get())
-        log.info("AI Models loaded...")
-        self.current_folder:Path = None
+        log.info("AI Audio loading...")
+        self.root.update_idletasks()
+        self.ai_audio = AIAudio(audio_model_size=self.model_var.get())
+        log.info("AI Image loading...")
+        self.ai_image = AIImage()
+        self.current_folder:Path = Path(".")
         self.transcripts_missing = 0 # number of audio transcriptions still not processed.
-        self.audio_queue = queue.Queue()
         self.audio_workers = []
         self.MAX_AUDIO_WORKERS = 1  # <-- sehr wichtig
-        self.start_audio_workers()  # Startet den Thread zur Verarbeitung von Audios/Videos
-
+        #self.start_audio_workers()  # Startet den Thread zur Verarbeitung von Audios/Videos
+        self.ai_face = AIFace(self.face_db_dir)
     #
     # ---------------- Menü ----------------
     #
@@ -227,6 +232,8 @@ class MediaAnalyzerGUI:
         Checkbutton(self.config_frame, text="Save CSV", variable=self.save_csv_var).grid(row=3, column=3, sticky="W")
         Checkbutton(self.config_frame, text="Save Excel", variable=self.save_xlsx_var).grid(row=3, column=4, sticky="W")
         Checkbutton(self.config_frame, text="Save AI Tags (Files)", variable=self.save_tags_var).grid(row=3, column=5, sticky="W")
+        Checkbutton(self.config_frame, text="AI Faces", variable=self.ai_faces_var).grid(row=3, column=6, sticky="W")
+
         self.root.update_idletasks()
         log.debug("Top controls GUI created.")
 
@@ -236,11 +243,11 @@ class MediaAnalyzerGUI:
         table_frame = Frame(self.root)
         table_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Landmark", "Image", "Audio")
+        cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Landmark", "Persons", "Image", "Audio")
         self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=20)
         for col in cols:
             self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c, False))
-            width = {"File": 105, "Type": 35, "Date": 100, "Lat":55, "Lon":55, "Length": 50, "Address": 150, "Landmark": 150, "Image": 250, "Audio": 250}.get(col, 100)
+            width = {"File": 105, "Type": 35, "Date": 100, "Lat":55, "Lon":55, "Length": 50, "Address": 150, "Landmark": 150, "Persons": 70, "Image": 250, "Audio": 250}.get(col, 100)
             self.tree.column(col, width=width, anchor="w")
 
         self.setup_click_play()
@@ -337,9 +344,10 @@ class MediaAnalyzerGUI:
                 a = list(row)
                 address:str = a[6]
                 landmark:str = a[7]
+                persons = a[8]
                 image_text = a[8]
                 audio_text = a[9]
-                media_tools.write_ai_metadata(self.folder / a[0], address,landmark, image_text,audio_text,et )
+                media_tools.write_ai_metadata(self.folder / Path(a[0]), address,landmark, image_text,audio_text,persons, et )
 
     #
     # Delete AI tags from shown Images, Videos and Audio in TreeView
@@ -351,7 +359,7 @@ class MediaAnalyzerGUI:
         with ExifToolHelper(encoding="utf-8") as et:
             for row in rows:
                 a = list(row)
-                media_tools.delete_ai_metadata(os.path.join(self.folder, a[0]), et)
+                media_tools.delete_ai_metadata(self.folder / Path(a[0]), et)
 
     @staticmethod
     def get_gpu_status():
@@ -378,7 +386,7 @@ class MediaAnalyzerGUI:
         if not hasattr(self, "aitools"):
             return
 
-        device = getattr(self.aitools.audio_model, "device", None)
+        device = getattr(self.ai_audio.audio_model, "device", None)
 
         if device and device.type == "cuda":
             text = "GPU: CUDA aktiv"
@@ -389,7 +397,8 @@ class MediaAnalyzerGUI:
 
         self.gpu_status_label.config(text=text, style=style)
 
-    def _init_styles(self):
+    @staticmethod
+    def _init_styles():
         style = ttk.Style()
 
         style.configure(
@@ -406,7 +415,7 @@ class MediaAnalyzerGUI:
             font=("Segoe UI", 9),
         )
 
-    def on_whisper_model_change(self, event=None):
+    def on_whisper_model_change(self):
         """
         Wird aufgerufen, wenn ein anderes Whisper-Modell ausgewählt wird.
         Lädt das Modell im Hintergrund.
@@ -426,17 +435,16 @@ class MediaAnalyzerGUI:
 
         def _load_model():
             try:
-                self.aitools._load_audio_model(audio_model_size=whisper_choice)
-                #self.aitools = AITools(audio_model_size=whisper_choice)
+                self.ai_audio._load_audio_model(audio_model_size=whisper_choice)
                 # GUI-Update: GPU-Status
                 self.root.after(0, self.update_gpu_status_label)
 
             except Exception as e:
                 self.root.after(
                     0,
-                    lambda e=e: messagebox.showerror(
+                    lambda _e=e: messagebox.showerror(
                         "ERROR",
-                        f"Audio Modell konnte nicht geladen werden:\n{e}"
+                        f"Audio Modell konnte nicht geladen werden:\n{_e}"
                     )
                 )
             finally:
@@ -489,11 +497,11 @@ class MediaAnalyzerGUI:
 
         # Relativer Pfad/Dateiname ist in Spalte 0 (Datei)
         filename = values[0]
-        # Die Textfelder sind in Spalte 7 (Beschreibung) und 8 (Transkript) - tree columns sind 1-indexed (#1..)
-        desc_col = "#9"
-        text_col = "#10"
+        # Die Textfelder sind in Spalte 9 (IMAGE2TEXT) und 8 (Transkript) - tree columns sind 1-indexed (#1..)
+        desc_col = "#10"
+        text_col = "#11"
 
-        # Wenn über Dateispalte -> Thumbnail anzeigen
+        # Wenn über Dateispalte, dann Thumbnail anzeigen
         if col == "#1":
             # Verstecke Text-Tooltip, falls sichtbar
             self.hide_text_tooltip()
@@ -517,7 +525,7 @@ class MediaAnalyzerGUI:
             elif filename.lower().endswith((".mp3", ".wav", ".m4a", ".flac")):
                 cover = extract_mp3_front_cover(path)
                 if cover:
-                    self.show_image_thumbnail(cover, event.x_root, event.y_root)
+                    self._show_thumbnail_window(cover, event.x_root, event.y_root)
                 else:
                     self.hide_thumbnail()
             else:
@@ -533,13 +541,10 @@ class MediaAnalyzerGUI:
             # tree.set benötigt den item id und die column name (hier nutzen wir index via values)
             # values ist ein tuple entsprechend der Spaltenreihenfolge
             # Beschreibung = values[8], Transkript = values[9]
-            try:
-                if col == desc_col:
-                    full_text = values[8] or ""
-                else:
-                    full_text = values[9] or ""
-            except Exception:
-                full_text = ""
+            if col == desc_col:
+                full_text = values[9] or ""
+            else:
+                full_text = values[10] or ""
 
             # Wenn kein Text -> nichts anzeigen
             if not full_text.strip():
@@ -585,8 +590,8 @@ class MediaAnalyzerGUI:
             padx=8,
             pady=6,
             bd=0,
-            width=1,  # WICHTIG: minimale Startbreite
-            height=1,
+            width=100,  # WICHTIG: minimale Startbreite
+            height=10,
             bg="white"
         )
         ta.pack(side="left", fill="both", expand=True)
@@ -650,6 +655,12 @@ class MediaAnalyzerGUI:
             photo = ImageTk.PhotoImage(img)
             self._last_thumb_image = photo
             self._show_thumbnail_window(photo, x, y)
+        except FileNotFoundError:
+            log.error("File not found.")
+            self.hide_thumbnail()
+        except OSError as e:
+            log.error(f"OS Error: {e}")
+            self.hide_thumbnail()
         except Exception:
             self.hide_thumbnail()
 
@@ -664,6 +675,7 @@ class MediaAnalyzerGUI:
         label.pack()
 
     def on_leave(self, event):
+        # do not delete event
         self.hide_thumbnail()
         self._last_thumb_path = None
         self._last_thumb_image = None
@@ -736,8 +748,8 @@ class MediaAnalyzerGUI:
     # Face ID folder (directory with subdirectories named like the persons which are stored in the subdirectories
     def choose_facedb(self):
         self.face_db_dir = Path(filedialog.askdirectory(title="FaceDB wählen"))
-        if self.face_db_dir:
-            threading.Thread(target=self.analyze_faces, args=(self.face_db_dir,), daemon=True).start()
+        if self.face_db_dir and self.face_db_dir.exists():
+            self.ai_face.set_db_path(self.face_db_dir)
 
     # ---------------- Analyse ----------------
     def choose_folder(self):
@@ -756,14 +768,6 @@ class MediaAnalyzerGUI:
             self.current_folder = self.folder
             threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
 
-    #
-    # Analyses all persons in the FaceDB.
-    #
-    def analyze_persons(self, file_path: Path):
-        self.status_label.config(text="📦 Lade FaceDB...")
-        self.root.update_idletasks()
-        self.status_label.config(text="📦 FaceDB ready")
-        # TODO
     #
     # Hauptroutine liest files vom file_path und füllt die Tabelle.
     #
@@ -786,11 +790,11 @@ class MediaAnalyzerGUI:
 
         if os.path.isdir(file_path):
             # Erzeuge eine Liste von Dateipfaden für alle Dateien im Verzeichnis
-            folder = file_path
+            self.folder = file_path
             all_files = [os.path.join(root, f) for root, _, files in os.walk(file_path) for f in files]
         elif os.path.isfile(file_path):
             # Setze all_files auf eine Liste, die nur den angegebenen Dateipfad enthält
-            folder = os.path.dirname(file_path)
+            self.folder = os.path.dirname(file_path)
             all_files = [file_path]
         else:
             # Bei ungültigem Pfad kann hier ein Fehler ausgelöst oder behandelt werden
@@ -813,15 +817,15 @@ class MediaAnalyzerGUI:
                 #start_time = time.time()
                 if isinstance(path, str):
                     p = Path(path)
+                else:
+                    p = path
                 kind = get_kind_of_media(p)
                 if kind == "unknown":
                     self.progress["value"] = i + 1
                     continue
-                relpath = os.path.relpath(p, folder)
-                rec = {"File": relpath, "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark": "", "Image": "", "Audio": ""}
+                relpath = os.path.relpath(p, self.folder)
+                rec = {"File": relpath, "Type": kind.capitalize(), "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark": "", "Persons": "", "Image": "", "Audio": ""}
                 item_id = self.tree.insert("", "end", values=tuple(rec.values()))
-                image_text = ""
-                audio_text = ""
                 try:
                     meta_ai = read_ai_metadata(p, et)
                     meta = get_meta_data_bundle(p, meta_ai, et_instance=et)
@@ -831,6 +835,7 @@ class MediaAnalyzerGUI:
                     rec["Length"] = meta.get("Length", "")
                     rec["Address"] = meta.get("Address", "")
                     rec["Landmark"] = meta.get("Landmark", "")
+                    rec["Persons"] = meta.get("Persons", "")
                     image_text:str = meta_ai.get("caption", "")
                     audio_text:str = meta_ai.get("transcript", "")
                     self._update_tree_columns(item_id, rec)
@@ -844,27 +849,28 @@ class MediaAnalyzerGUI:
 
                     if rec["Lat"] and rec["Lon"] and not rec["Landmark"]:
                         log.info(f"Lat: {rec['Lat']}, Lon: {rec['Lon']}")
-                        rec["Landmark"] = self.landmark_finder.resolve(float(rec["Lat"]), float(rec["Lon"]),5)
+                        rec["Landmark"] = media_tools.get_nearest_landmark(float(rec["Lat"]), float(rec["Lon"]),radius=500)
                         log.info(f"landmark_finder={rec['Landmark']}")
                         self._update_tree_columns(item_id, rec)
                     if len(image_text) < 4:
                         # Mache Image Beschreibung sofort
                         if kind == "image":
-                            image_text = self.aitools.describe_image(p)
+                            image_text = self.ai_image.describe_image(p)
                         elif kind == "video":
                             # Das ist aufwendiger: Video zerlegen in Einzelbilder, alle %interval%s Sekunden.
-                            image_text = self.aitools.describe_video_by_frames(p, interval)
-                            if self.save_frames_var.get():
-                                self._save_video_frames(p, interval)
+                            image_text = self.ai_image.describe_video_by_frames(p, interval)
+                            if self.save_frames_var.get() or self.ai_faces_var:
+                                media_tools.save_video_frames(p, interval)
                         elif kind == "audio" and len(audio_text) < 4:
-                            log.info("Versuche Bild aus Audio zu extrahieren")
+                            log.info("Extract Image from Audio file")
                             image = extract_mp3_front_cover(p)
                             if image is None:
                                 log.warning(f"{relpath} has no image")
                                 image_text = ""
                             else:
-                                image_text = self.aitools.describe_image(image)
+                                image_text = self.ai_image.describe_image(image)
                                 log.info(f"Cover-Bild zeigt: {image_text}")
+                                self.ai_face.push(p, kind, item_id)
                                 # MP3 Cover Image extrahieren und beschreiben.
 
                     rec["Image"] = image_text
@@ -876,9 +882,8 @@ class MediaAnalyzerGUI:
                         if audio_text == "..." or audio_text == "":
                             self.transcripts_missing += 1
                             transcripts_cnt += 1
-                            transcripts_duration:int = transcripts_duration+ int(rec["Length"])
-                            self._run_ai_analysis(p, kind, item_id, image_text, float(rec["Length"]))
-
+                            transcripts_duration:int = transcripts_duration+ int(round(float(rec["Length"])))
+                            self.ai_audio.push(p, kind, item_id, image_text, float(rec["Length"]))
 
                 except Exception:
                     log.exception(f"⚠️ Fehler bei: {p}: ")
@@ -886,132 +891,118 @@ class MediaAnalyzerGUI:
                 self.progress["value"] = i + 1
                 self.root.update_idletasks()
 
+        #
+        # Analyses all persons in the FaceDB.
+        #
+        self.progress["maximum"] = total
+        self.progress["value"] = 1
+        self.progress.config(mode="indeterminate")
+        while True:
+            i = 1
+            job = self.ai_face.get()
+            if job is None:
+                log.info("Face AI has nothing to do.")
+                break  # sauberer Shutdown
+
+            path, kind, item_id = job
+            persons:set = set()
+            try:
+                persons = self.ai_face.identify_persons(Path(path))
+                self.progress.config(mode="determinate")
+                self.status_label.config(text="🤓 Search Faces...")
+                self.root.update_idletasks()
+                i += 1
+                self.progress["value"] = i
+            except Exception:
+                log.exception("_faces_worker_loop(): ")
+                persons = {"⚠️"}
+            rec["Persons"] = persons
+            self._update_tree_persons_columns(item_id, persons)
+
+
         self.status_label.config(
-            text=f"🗣️ Transcribe Audios {self.transcripts_missing}"
+            text=f"🎧 Transcribe Audios {self.transcripts_missing}"
         )
         self.progress["maximum"] = transcripts_duration
-        self.progress["value"] = 1
-        #self.progress.config(mode="indeterminate")
+        self.progress["value"] = 0
+        self.progress.config(mode="indeterminate")
+        self.root.update_idletasks()
+        while True:
+            i = 0
+            job = self.ai_audio._get()
+            if job is None:
+                log.info("🎧 Audio AI has nothing to do.")
+                break  # sauberer Shutdown
 
-        # --- Warten, bis alle Audio-Jobs abgearbeitet sind ---
-        def _wait_for_audio_jobs():
-            self.audio_queue.join()  # ⬅ BLOCKIERT, bis alle task_done() aufgerufen wurden
-            self.root.after(0, _on_all_audio_done)
+            path, kind, item_id, image_text, length = job
+            audio_text:str = ""
+            try:
+                audio_text = self.ai_audio.transcribe_audio(Path(path))
+                self.progress.config(mode="determinate")
+                self.status_label.config(text="🎧 Transcribe Videos & Audios...")
+                self.root.update_idletasks()
+                i += round(length)
+                self.progress["value"] = i
+            except Exception:
+                log.exception("⚠️ in transcribing: ")
+                audio_text = "⚠️"
+            rec["Audio"] = audio_text
+            self._update_tree_audio_columns(item_id, audio_text)
 
-        def _on_all_audio_done():
-            if self.save_csv_var.get():
-                out_path = os.path.join(folder, "_media_analysis.csv")
-                self.export_treeview_to_csv(out_path)
-                self.status_label.config(text=f"✅ Fertig → {os.path.basename(out_path)}")
-            if self.save_xlsx_var.get():
-                out_path = os.path.join(folder, "_media_analysis.xlsx")
-                self.export_treeview_to_xlsx(out_path)
-                self.status_label.config(text=f"✅ Fertig → {os.path.basename(out_path)}")
-            if self.save_tags_var.get():
-                self.export_treeview_to_files()
-                self.status_label.config(text=f"✅ Fertig → Tags in Files")
+        log.info("🎧 Audio AI finished all jobs.")
+        self._on_all_jobs_done()
 
-            messagebox.showinfo(
-                "Fertig",
-                "✅ Analyse abgeschlossen.\nAlle Audio-Transkripte sind fertig."
-            )
+        self.status_label.config(
+            text=f"All done"
+        )
+        self.progress["maximum"] = transcripts_duration
+        self.progress["value"] = transcripts_duration
+        self.root.update_idletasks()
 
-        threading.Thread(
-            target=_wait_for_audio_jobs,
-            daemon=True,
-            name="WaitForAudioJobs"
-        ).start()
+        messagebox.showinfo(
+            "Fertig",
+        "✅ Analyse abgeschlossen.\n"
+        )
 
-        # HIER WARTEN und progress updaten, während die Audio Transcripts erzeugt werden im Thread _audio_worker_loop().
-        self.progress.config(mode="determinate")
-        if total == 1:  # only show this window in single file mode
-            text = audio_text + "\n\n " + image_text.translate(str.maketrans("|", '\n'))
-            self.show_result_window(file_path, kind, text)
+    def _on_all_jobs_done(self):
+        if self.save_csv_var.get():
+            out_path = os.path.join(self.folder, "_media_analysis.csv")
+            self.export_treeview_to_csv(out_path)
+            self.status_label.config(text=f"✅ Fertig → {os.path.basename(out_path)}")
+        if self.save_xlsx_var.get():
+            out_path = os.path.join(self.folder, "_media_analysis.xlsx")
+            self.export_treeview_to_xlsx(out_path)
+            self.status_label.config(text=f"✅ Fertig → {os.path.basename(out_path)}")
+        if self.save_tags_var.get():
+            self.export_treeview_to_files()
+            self.status_label.config(text=f"✅ Fertig → Tags in Files")
 
     # ---------------- Single File Mode ----------------
     def analyze_single_file(self, file_path:Path):
         self.analyze_folder(file_path)
 
     #
-    # Startet einen Thread um Audio Transkription zu machen
-    #
-    def start_audio_workers(self):
-        for _ in range(self.MAX_AUDIO_WORKERS):
-            t = threading.Thread(
-                target=self._audio_worker_loop,
-                daemon=True,
-                name="AudioWorker"
-            )
-            t.start()
-            self.audio_workers.append(t)
-
-    #
-    # THREAD: Macht die eigentliche Transkription und holt Jobs aus der Queue
-    #
-    def _audio_worker_loop(self):
-        while True:
-            job = self.audio_queue.get()
-            if job is None:
-                log.info("AUDIT2TEXT has nothing to do.")
-                break  # sauberer Shutdown
-
-            path, kind, item_id, image_text, duration = job
-            audio_text = ""
-            try:
-                audio_text = self.aitools.transcribe_audio(path)
-                if self.save_transcript_var.get():
-                    text = f"\"{audio_text}\"\n\n{image_text.translate(str.maketrans('|', '\n'))}"
-                    with open(f"{path}.txt", "w", encoding="utf-8") as f:
-                        f.write(text)
-
-            except Exception as e:
-                audio_text = f"⚠️ Fehler: {e}"
-            finally:
-                self.root.after(
-                    0,
-                    self._update_tree_ai_columns,
-                    item_id,
-                    audio_text
-                )
-                self.transcripts_missing -= 1  # ✅ hierhin
-                self.progress["value"] += int(duration)
-                self.audio_queue.task_done()
-
-    def _update_tree_ai_columns(self, item_id, audio_text):
-        values = list(self.tree.item(item_id, "values"))
-        values[9] = audio_text
-        self.tree.item(item_id, values=values)
-
-        # Fortschritt
-        self.progress["value"] += 1
-
-        if self.progress["value"] >= self.progress["maximum"]:
-            self.status_label.config(text="✅ Audio-Transkription abgeschlossen")
-
-    #
-    # Push jedes Audio und Video in die Queue. _audio_worker_loop()
-    #
-    def _run_ai_analysis(self, path, kind:str, item_id, image_text:str, length:float):
-        if kind not in ("audio", "video"):
-            return
-        self.audio_queue.put(
-            (path, kind, item_id, image_text, length)
-        )
-        log.debug(f"queue.size={self.audio_queue.qsize()}")
-
-    #
     # AI Ergebnisse eintragen.
     #
-    def _update_tree_ai_columns(self, item_id, audio_text:str):
+    def _update_tree_audio_columns(self, item_id, audio_text:str):
         values = list(self.tree.item(item_id, "values"))
 
         # Spaltenindex:
-        # 0 File | 1 Type | 2 Date | 3 Lat | 4 Lon | 5 Length | 6 Address | 7 Landmark | 8 Image | 9 Audio
+        # 0 File | 1 Type | 2 Date | 3 Lat | 4 Lon | 5 Length | 6 Address | 7 Landmark | 8 Persons | 9 Image | 10 Audio
         if audio_text:
-            values[9] = audio_text
+            values[10] = audio_text
 
         self.tree.item(item_id, values=values)
 
+    def _update_tree_persons_columns(self, item_id, persons:set):
+        values = list(self.tree.item(item_id, "values"))
+
+        # Spaltenindex:
+        # 0 File | 1 Type | 2 Date | 3 Lat | 4 Lon | 5 Length | 6 Address | 7 Landmark | 8 Persons | 9 Image | 10 Audio
+        if persons:
+            values[8] = persons
+
+        self.tree.item(item_id, values=values)
     #
     # AI Ergebnisse eintragen.
     #
@@ -1033,8 +1024,9 @@ class MediaAnalyzerGUI:
             values[5] = ""
         values[6] = rec["Address"]
         values[7] = rec["Landmark"]
-        values[8] = rec["Image"]
-        values[9] = rec["Audio"]
+        values[8] = rec["Persons"]
+        values[9] = rec["Image"]
+        values[10] = rec["Audio"]
         self.tree.item(item_id, values=values)
 
 
@@ -1050,23 +1042,6 @@ class MediaAnalyzerGUI:
         text_area.pack(fill=BOTH, expand=True, padx=10, pady=10)
         text_area.insert(END, result_text)
         text_area.config(state="disabled")
-
-    # ---------------- Hilfsfunktionen ----------------
-    @staticmethod
-    def _save_video_frames(video_path, interval):
-        """Speichert Frames als PNGs im gleichen Ordner."""
-        from moviepy.video.io.VideoFileClip import VideoFileClip
-        clip = VideoFileClip(video_path)
-        base, _ = os.path.splitext(video_path)
-        t = 0
-        while t < clip.duration:
-            frame = clip.get_frame(t)
-            img = Image.fromarray(frame)
-            mmss = format_time2mmss(t).replace(":", "-")
-            out_name = f"{base}+{mmss}.png"
-            img.save(out_name)
-            t += interval
-        clip.close()
 
     @staticmethod
     def _save_transcript(file_path, text):
