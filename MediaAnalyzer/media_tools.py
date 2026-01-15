@@ -21,8 +21,6 @@ from mutagen.id3 import ID3, APIC
 import logging
 import requests
 
-from location_tools import NearbyLandmarkResolver
-
 log = logging.getLogger(__name__)
 MEDIA_EXT = {
     ".jpg": "image", ".jpeg": "image", ".png": "image",
@@ -185,6 +183,8 @@ def _get_date_from_metadata(filepath:Path, et_instance=None):
 #  unknown
 ############################################################
 def get_kind_of_media(path:Path) -> str:
+    if not isinstance(path, Path):
+        path = Path(path)
     ext = path.suffix.lower()
     kind:str = "unknown"
     if ext in MEDIA_EXT:
@@ -469,16 +469,58 @@ def reverse_geocode(lat:float, lon:float):
     return "",None
 
 
-def get_nearest_landmark(lat:float, lon:float, radius=500):
-    # Query: Suche im Radius um lat/lon nach "tourism"-Tags
+def get_nearest_landmark(lat: float, lon: float, radius: int = 500):
+    # Overpass API URL
     overpass_url = "http://overpass-api.de/api/interpreter"
+
+    # Overpass QL Abfrage
+    overpass_query = f"""
+    [out:json]; 
+    (
+      node["tourism"](around:{radius},{lat},{lon});
+      way["tourism"](around:{radius},{lat},{lon});
+      relation["tourism"](around:{radius},{lat},{lon});
+    ); 
+    out center; 
+    """
+
+    # Anfrage an die Overpass API
+    response = requests.get(overpass_url, params={'data': overpass_query})
+
+    # Überprüfung des Statuscodes
+    if response.status_code == 200:
+        data = response.json()
+        # Wenn Ergebnisse vorhanden sind, die nächste Attraktion zurückgeben
+        if data['elements']:
+            # Hier könnte man die Entfernung ausrechnen, um die nächste Attraktion zu finden
+            # Momentan geben wir einfach die erste gefundene Attraktion zurück
+            return data['elements'][0]
+        else:
+            return None
+    else:
+        print(f"Fehler beim Abrufen der Daten: {response.status_code}")
+        return None
+
+
+def get_nearest_landmark2(lat:float, lon:float, radius=500):
+    # Query: Suche im Radius um lat/lon nach "tourism"-Tags
+    overpass_url = "https://overpass-api.de/api/interpreter"
     overpass_query = f"""
     [out:json];
     node["tourism"](around:{radius},{lat},{lon});
     out body;
     """
+
     response = requests.get(overpass_url, params={'data': overpass_query})
-    data = response.json()
+    if response.status_code == 200:
+        try:
+            data = response.json()
+        except ValueError:
+            print("Die Antwort konnte nicht als JSON decodiert werden.")
+            print("Antwortinhalt:", response.text)
+    else:
+        print(f"Fehler beim Abrufen der Daten: {response.status_code}")
+        print("Antwortinhalt:", response.text)
 
     if data['elements']:
         # Das erste gefundene Element zurückgeben
@@ -486,16 +528,26 @@ def get_nearest_landmark(lat:float, lon:float, radius=500):
         return data['elements'][0].get('tags', {}).get('name', 'Unbekannte Landmark')
     return "None"
 
-def extract_mp3_front_cover(mp3_path):
+def extract_mp3_front_cover(mp3_path: str) -> Image.Image | None:
+    base, _ = os.path.splitext(mp3_path)
+    log.debug(f"mp3_path={mp3_path}, base={base}")
+    out_name = f"{base}+cover.png"
+    if os.path.exists(out_name):
+        log.debug(f"Found file {out_name}")
+        return Image.open(out_name)
+
     try:
         tags = ID3(mp3_path)
-    except Exception:
+    except Exception as e:
+        log.error(f"Error reading ID3 tags: {e}")
         return None
 
     front = None
     fallback = None
     for tag in tags.values():
+        log.debug(f"Found tag {tag}")
         if isinstance(tag, APIC):
+            log.debug(f"Found APIC tag with type {tag.type}")
             if tag.type == 3:
                 front = tag
                 break
@@ -503,38 +555,38 @@ def extract_mp3_front_cover(mp3_path):
 
     tag = front or fallback
     if not tag:
+        log.warning(f"{mp3_path} has no image")
         return None
 
     try:
-        return Image.open(io.BytesIO(tag.data))
-    except Exception:
+        img = Image.open(io.BytesIO(tag.data))
+        log.debug(f"Write MP3 cover image to {out_name}")
+        img.save(out_name)
+        return img
+    except Exception as e:
+        log.error(f"Error opening image: {e}")
         return None
 
-
-def extract_mp3_front_cover2(mp3_path: str) -> Image.Image | None:
-    try:
-        tags = ID3(mp3_path)
-    except Exception:
-        return None
-
-    front = None
-    fallback = None
-
-    for tag in tags.values():
-        if isinstance(tag, APIC):
-            if tag.type == 3:  # Front Cover
-                front = tag
-                break
-            fallback = fallback or tag
-
-    tag = front or fallback
-    if not tag:
-        return None
-
-    try:
-        return Image.open(io.BytesIO(tag.data))
-    except Exception:
-        return None
+# ---------------- Hilfsfunktionen ----------------
+#
+# Speichert von einem Video alle <interval> Sekunden einen Frame als Bild
+# Gespeichert unter "{base}+{mmss}.png"
+#
+@staticmethod
+def save_video_frames(video_path, interval):
+    """Speichert Frames als PNGs im gleichen Ordner."""
+    from moviepy.video.io.VideoFileClip import VideoFileClip
+    clip = VideoFileClip(video_path)
+    base, _ = os.path.splitext(video_path)
+    t = 0
+    while t < clip.duration:
+        frame = clip.get_frame(t)
+        img = Image.fromarray(frame)
+        mmss = format_time2mmss(t).replace(":", "-")
+        out_name = f"{base}+{mmss}.png"
+        img.save(out_name)
+        t += interval
+    clip.close()
 
 #
 # Bewahre die Original-Filezeit auf
@@ -558,7 +610,7 @@ def assert_utf8(text: str) -> str:
 #
 # Schreibe AI Metadaten (Bildschreibung, ...) ins Video-File.
 def write_ai_metadata(
-    path: Path, address: str = "", landmark:str = "", image2text: str ="", transcript: str = "", et = None):
+    path: Path, address: str = "", landmark:str = "", image2text: str ="", transcript: str = "", persons:set = "", et = None):
 
     log.info(f"Writing ai metadata to {path}")
     kind:str = get_kind_of_media(path)
@@ -583,6 +635,8 @@ def write_ai_metadata(
         args.append(f"-XMP:Description={image2text}")
         args.append(f"-IPTC:Caption-Abstract={image2text}")
         args.append(f"-XMP:Transcript={transcript}")  # sollte leer sein
+        args.append(f"-XMP-dc:subject={persons}")
+        args.append(f"-XMP:Iptc4xmpExt:PersonInImage={persons}")
     elif kind == "video":
         args.append(f"-XMP:Location={adr_mark}")
         args.append(f"-QuickTime:LocationName={adr_mark}")
@@ -591,7 +645,8 @@ def write_ai_metadata(
         args.append(f"-XMP:Description={image2text}")
         args.append(f"-XMP-iptcExt:Transcript={transcript}") # Profi Transcript
         args.append(f"-XMP:Transcript={transcript}") # Transcript
-
+        args.append(f"-XMP-dc:subject={persons}")
+        args.append(f"-XMP:Iptc4xmpExt:PersonInImage={persons}")
     try:
         if et is None:
             with ExifToolHelper(encoding="utf-8") as et:
