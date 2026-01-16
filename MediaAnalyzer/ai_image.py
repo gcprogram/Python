@@ -1,10 +1,8 @@
-import gc
 import os
 import logging
 from os.path import exists
 from pathlib import Path
 import numpy as np
-import threading
 import torch
 from PIL import Image
 from moviepy.video.io.VideoFileClip import VideoFileClip
@@ -41,7 +39,7 @@ class AIImage:
         self.ai_queue.put( (path, kind, item_id), block = False, timeout = None)
         log.debug(f"Image queue.size={self.ai_queue.qsize()}")
 
-    # Retrieves the job from the Queue (FIFO) -> oldest first.
+    # Retrieves the job from the Queue (FIFO) -> oldest job first.
     def _get(self):
         log.info(f"Image queue.size={self.ai_queue.qsize()}")
         try:
@@ -85,7 +83,7 @@ class AIImage:
 
             #  float16 (schneller auf GPU)
             log.info("🖼️ Image2Text model saved under:", path)
-        except Exception as e:
+        except Exception:
             log.exception(f"❌ ERROR: Downloading Image2Text model:")
             self.image_processor = None
             self.image_model = None
@@ -153,11 +151,11 @@ class AIImage:
                     if caption != last_caption:
                         captions.append(f"{fmt_mm_ss} {caption}")
                     last_caption = caption
-                except Exception as e:
+                except Exception:
                     log.exception("⚠️ ERROR: Frame extraction or Image description problem:")
                     continue
             clip.close()
-        except Exception as e:
+        except Exception:
             log.exception("⚠️ ERROR: VideoClip problem: ")
             return f"⚠️ ERROR: VideoClip problem"
 

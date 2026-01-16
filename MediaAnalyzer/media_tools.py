@@ -80,7 +80,7 @@ def _convert_to_degrees(value):
 # YYYY-mm-dd HH-MM-SS
 # unused da es nicht ganz funktioniert.
 ###############################################
-def _format_date(self, date_str):
+def _format_date(date_str):
     if not date_str:
         return ""
     try:
@@ -89,12 +89,12 @@ def _format_date(self, date_str):
             try:
                 dt = datetime.strptime(date_str[:19], fmt)
                 return dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception as e:
+            except Exception:
                 log.exception(f"Exception in _format_date(): ")
                 pass
     except Exception:
         pass
-    return date_str  # falls nicht parsbar, original zurückgeben
+    return date_str  # falls nicht parse bar, original zurückgeben
 
 
 #############################################
@@ -172,8 +172,8 @@ def _get_date_from_metadata(filepath:Path, et_instance=None):
                 # log.exception(f"WAV-Fehler bei {os.path.basename(filepath)}:")
                 pass
 
-        # 3. Fallback: Rückgabe des Dateisystem-Datums
-        return fallback_date
+    # 3. Fallback: Rückgabe des Dateisystem-Datums
+    return fallback_date
 
 ############################################################
 # Returns type of media file
@@ -192,7 +192,7 @@ def get_kind_of_media(path:Path) -> str:
     return kind
 
 ############################################################
-# Extract the meta data from all type of media files
+# Extract the metadata from all type of media files
 ############################################################
 def get_meta_data_bundle(path: Path, meta_ai:dict, et_instance: object = None) -> Dict[str, Any]:
     res = { "Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark":"" }
@@ -220,7 +220,7 @@ def get_meta_data_bundle(path: Path, meta_ai:dict, et_instance: object = None) -
 def _get_exif_data(path: Path) -> Dict[str, Any]:
     """
     Liest EXIF aus Bildern (Datum, GPS) und gibt Dict mit Schlüsseln:
-    {'Date': str, 'Lat': float|'', 'Lon': float|''}
+    {'Date': str, 'Lat': float, 'Lon': float|''}
     """
     data = {"Date": "", "Lat": "", "Lon": "", "Length": "", "Address": "", "Landmark": ""}
     try:
@@ -375,7 +375,7 @@ def _get_video_metadata(path: Path) -> Dict[str, Any]:
                 except ValueError:
                     dt = datetime.strptime(c, "%Y-%m-%dT%H:%M:%S")
                 result["Date"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception as e:
+            except Exception:
                 log.exception(f"⚠️ Fehler beim Parsen von creation_time: {creation}: ")
 
         # check stream tags as well
@@ -436,7 +436,6 @@ def reverse_geocode(lat:float, lon:float):
     """Wandelt Koordinaten in einen Ortsnamen um (Nominatim - uses OpenStreetMap)."""
     if not lat or not lon:
         return ""
-    loc: str = ""
     try:
         geolocator = Nominatim(user_agent="AI MediaAnalyzer")
         location = geolocator.reverse((lat, lon), language="de", timeout=10)
@@ -572,7 +571,6 @@ def extract_mp3_front_cover(mp3_path: str) -> Image.Image | None:
 # Speichert von einem Video alle <interval> Sekunden einen Frame als Bild
 # Gespeichert unter "{base}+{mmss}.png"
 #
-@staticmethod
 def save_video_frames(video_path, interval):
     """Speichert Frames als PNGs im gleichen Ordner."""
     from moviepy.video.io.VideoFileClip import VideoFileClip

@@ -676,33 +676,37 @@ class MediaAnalyzerGUI:
 
     def on_leave(self, event):
         # do not delete event
+        log.debug(event)
         self.hide_thumbnail()
         self._last_thumb_path = None
         self._last_thumb_image = None
 
-    def show_image_thumbnail(self, path, x:int, y:int):
+    def show_image_thumbnail(self, path: Path, x: int, y: int):
         try:
             img = Image.open(path)
+
             # Orientierung aus EXIF
             try:
-                for orientation in ExifTags.TAGS.keys():
-                    if ExifTags.TAGS[orientation] == 'Orientation':
-                        break
-                exif = img._getexif()
-                if exif and orientation in exif:
-                    o = exif[orientation]
-                    if o == 3:
+                orientation_key = next((key for key, value in ExifTags.TAGS.items() if value == 'Orientation'), None)
+                exif = img.getexif()  # Verwende getexif() anstelle von _getexif()
+
+                if exif is not None and orientation_key in exif:
+                    orientation_value = exif[orientation_key]
+                    if orientation_value == 3:
                         img = img.rotate(180, expand=True)
-                    elif o == 6:
+                    elif orientation_value == 6:
                         img = img.rotate(270, expand=True)
-                    elif o == 8:
+                    elif orientation_value == 8:
                         img = img.rotate(90, expand=True)
+
             except Exception:
-                pass
+                pass  # Optional: Logge den Fehler hier, falls gewünscht
+
             img.thumbnail((200, 200))
-            photo = ImageTk.PhotoImage(img)
-            self._last_thumb_image = photo
+            self._last_thumb_image = ImageTk.PhotoImage(img)  # Halte eine Referenz
+            photo = self._last_thumb_image  # Referenz wird hierüber gehalten
             self._show_thumbnail_window(photo, x, y)
+
         except Exception:
             self.hide_thumbnail()
 

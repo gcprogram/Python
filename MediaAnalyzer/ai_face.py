@@ -22,7 +22,8 @@ class AIFace:
     def set_db_path(self, db_path:Path):
         self.db_path:Path = db_path
 
-    def _normalize_path(self, path: str) -> str:
+    @staticmethod
+    def _normalize_path(path: str) -> str:
         return path.encode('ascii', 'ignore').decode('ascii')
 
     def _identify_persons_image(self, image_path:Path) -> set:
@@ -45,9 +46,9 @@ class AIFace:
                     found_persons.add(person_name)
 
             return set(found_persons)
-        except Exception as e:
+        except Exception:
                 logging.exception(f"identify_persons({image_path}): ")
-        return []
+        return {}
 
     def identify_persons(self, file_path:Path) -> set:
         """Erkennt alle Personen in Videos Frames mit <interval> Abstand."""
@@ -64,10 +65,10 @@ class AIFace:
             log.debug(f"Found {len(frame_files)} frames in {file_path}")
             # Schleife über alle Frames des Videofiles
             for frame in frame_files:
-                persons = persons | self._identify_persons_image(frame)
+                persons = persons | self._identify_persons_image(Path(frame))
         elif kind == "audio":
-            infile = os.path.splitext(file_path)[0] + '+cover.png'
-            if os.path.exists(infile) and os.path.isfile(infile):
+            infile = file_path.with_name(file_path.stem + '+cover.png')
+            if infile.exists() and infile.is_file():
                 log.debug(f"Found Cover image in {infile}.")
                 persons = self._identify_persons_image(infile)
         else:
@@ -100,14 +101,13 @@ class AIFace:
         log.info("🗑️ Unloading Face AI Model.")
 
     def is_running(self) -> bool:
-        return self.runs;
+        return self.runs
 
     def from_gpu_to_cpu(self):
         log.info("🔄 Moving Face AI Model from GPU to CPU.")
 
     def _wait_for_jobs(self):
         self.ai_queue.join()  # ⬅ BLOCKIERT, bis alle task_done() aufgerufen wurden
-        self.root.after(0, self._on_all_jobs_done)
 
     def _on_all_jobs_done(self):
         log.debug("✅ Face AI finished analysing.")
@@ -117,30 +117,6 @@ class AIFace:
             daemon=True,
             name="WaitForFaceJobs"
         ).start()
-
-    def _faces_worker_loop(self):
-        while True:
-            job = self.ai_face.get()
-            if job is None:
-                log.info("Face AI has nothing to do.")
-                break  # sauberer Shutdown
-
-            path, kind, item_id = job
-            persons:set = []
-            try:
-                persons = self.ai_face.identify_persons(Path(path))
-
-            except Exception as e:
-                log.exception("_faces_worker_loop(): ")
-                persons = "⚠️"
-            finally:
-                self.root.after(
-                    0,
-                    self._update_tree_persons_columns,
-                    item_id,
-                    persons
-                )
-                self.ai_face.ai_queue.task_done()
 
 # --- Integration in dein Projekt ---
 #FACE_IDENT_DB="C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT/personen_db"
