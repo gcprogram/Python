@@ -437,7 +437,7 @@ def reverse_geocode(lat:float, lon:float):
     if not lat or not lon:
         return ""
     try:
-        geolocator = Nominatim(user_agent="AI MediaAnalyzer")
+        geolocator = Nominatim(user_agent="AI AI MediaAnalyzer")
         location = geolocator.reverse((lat, lon), language="de", timeout=10)
         if location and location.address:
             loc =  location.raw.get("name") or location.raw.get("display_name")
@@ -621,7 +621,7 @@ def write_ai_metadata(
     args = [
             "-charset",
             "utf8" ]
-    args.append( "-XMP:CreatorTool=MediaAnalyzer AI")
+    args.append( "-XMP:CreatorTool=AI MediaAnalyzer AI")
     if kind == "audio":
         args.append(f"-Comment={image2text}")     # Cover Bild Beschreibung
         args.append(f"-ID3:Lyrics={transcript}")
