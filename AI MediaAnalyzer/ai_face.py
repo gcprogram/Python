@@ -4,6 +4,7 @@ from deepface import DeepFace
 from pathlib import Path
 import queue
 import threading
+import cv2
 # own:
 import media_tools
 
@@ -29,14 +30,20 @@ class AIFace:
     def _identify_persons_image(self, image_path:Path) -> set:
         """Erkennt alle Personen auf einem Bild und gibt eine Liste der Namen zurück."""
         try:
-            normalized_path = self._normalize_path( str(image_path) )
+            img = cv2.imdecode(
+                np.fromfile(str(image_path), dtype=np.uint8),
+                cv2.IMREAD_COLOR
+            )
             # enforce_detection=False verhindert Abstürze, wenn kein Gesicht gefunden wird
-            results = DeepFace.find(img_path=normalized_path,
+            results = DeepFace.find(img_path=img,
                                     db_path=str(self.db_path),
                                     model_name=self.model_name,
                                     enforce_detection=self.enforce_detection,
                                     silent=True)
-
+            mood = DeepFace.analyze(img=img,
+                                    enforce_detection=self.enforce_detection,
+                                    silent=True)
+            log.info(f"Personen Stimmung: {mood}")
             found_persons = set()
             for df in results:
                 if not df.empty:
@@ -48,7 +55,7 @@ class AIFace:
             return set(found_persons)
         except Exception:
                 logging.exception(f"identify_persons({image_path}): ")
-        return {}
+        return set()
 
     def identify_persons(self, file_path:Path) -> set:
         """Erkennt alle Personen in Videos Frames mit <interval> Abstand."""
@@ -72,7 +79,7 @@ class AIFace:
                 log.debug(f"Found Cover image in {infile}.")
                 persons = self._identify_persons_image(infile)
         else:
-            log.debug(f"Unkown kind {kind}")
+            log.debug(f"Unknown kind {kind}")
 
         return persons
 
