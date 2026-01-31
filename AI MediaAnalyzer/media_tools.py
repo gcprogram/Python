@@ -8,18 +8,18 @@ import io
 from pathlib import Path
 from datetime import datetime
 from dateutil import parser
-from geopy import Nominatim
 from moviepy.video.io.VideoFileClip import VideoFileClip  # <- korrigierter Import
+from math import radians, sin, cos, sqrt, atan2
 from typing import Tuple, Dict, Any
+import logging
 # Metadaten-Bibliotheken
 from PIL import Image  # Für JPEGs/PNGs (Exif)
 import exiftool  # Damit 'exiftool.exceptions' erkannt wird
 from exiftool import ExifToolHelper  # Bester Allrounder, erfordert separate ExifTool-Installation!
 from mutagen import File
 from mutagen.wave import WAVE
-from mutagen.id3 import ID3, APIC
-import logging
-import requests
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC, ID3NoHeaderError, ID3Tags, COMM, ID3NoHeaderError, USLT
 
 log = logging.getLogger(__name__)
 MEDIA_EXT = {
@@ -425,107 +425,15 @@ def format_time2mmss(sekunden: float) -> str:
     return formatted_time
 
 ###########################################################
-# Wandelt latitude, longitude in einen Ortsnamen um
-# Parts Elements:
-# {'aeroway': 'B', 'road': 'Circuit 2', 'town': 'Tremblay-en-France', 'municipality': 'Le Raincy', 'county': 'Seine-Saint-Denis', 'ISO3166-2-lvl6': 'FR-93', 'state': 'Île-de-France', 'ISO3166-2-lvl4': 'FR-IDF', 'region': 'Metropolitanes Frankreich', 'postcode': '93290', 'country': 'Frankreich', 'country_code': 'fr'}
-# {'road': 'Circuit 2', 'town': 'Tremblay-en-France', 'municipality': 'Le Raincy', 'county': 'Seine-Saint-Denis', 'ISO3166-2-lvl6': 'FR-93', 'state': 'Île-de-France', 'ISO3166-2-lvl4': 'FR-IDF', 'region': 'Metropolitanes Frankreich', 'postcode': '93290', 'country': 'Frankreich', 'country_code': 'fr'}
-# {'road': 'Rue de la Grande Borne', 'village': 'Le Mesnil-Amelot', 'municipality': 'Meaux', 'county': 'Seine-et-Marne', 'ISO3166-2-lvl6': 'FR-77', 'region': 'Metropolitanes Frankreich', 'postcode': '77990', 'country': 'Frankreich', 'country_code': 'fr'}
+# Abstand von zwei Koordinaten
 ###########################################################
 
-def reverse_geocode(lat:float, lon:float):
-    """Wandelt Koordinaten in einen Ortsnamen um (Nominatim - uses OpenStreetMap)."""
-    if not lat or not lon:
-        return ""
-    try:
-        geolocator = Nominatim(user_agent="AI AI MediaAnalyzer")
-        location = geolocator.reverse((lat, lon), language="de", timeout=10)
-        if location and location.address:
-            loc =  location.raw.get("name") or location.raw.get("display_name")
-            landmark: str = location.raw.get("tourism") or location.raw.get("historic") or location.raw.get(
-                "amenity") or location.raw.get("leisure")
-            if loc or landmark:
-                return loc, landmark
-            else:
-                # z. B. nur Stadt oder Land extrahieren
-                parts = location.raw.get("address", {})
-                # parts contains a lot of address data
-                # pts = [parts.get("postcode"), parts.get("city"), parts.get("town"), parts.get("village"), parts.get("state"), parts.get("country")]
-                # In order to make address not too long, collect only a few parts:
-                # Part 1: Road
-                loc += parts.get("road")
-                if len(loc) > 0:
-                    loc += ", "
-                # Part2: City, town, village, state, municipality, or region
-                loc += parts.get("city") or parts.get("town") or parts.get("village") or \
-                       parts.get("state") or parts.get("municipality") or parts.get("region")
-                # Part 3: country
-                if len(loc) > 0:
-                    loc += ", "
-                loc += parts.get("country")
-            return loc, landmark
-    except Exception:
-        log.exception("reverse_geocode() Exception Nominatim")
-    return "",None
-
-
-def get_nearest_landmark(lat: float, lon: float, radius: int = 500):
-    # Overpass API URL
-    overpass_url = "http://overpass-api.de/api/interpreter"
-
-    # Overpass QL Abfrage
-    overpass_query = f"""
-    [out:json]; 
-    (
-      node["tourism"](around:{radius},{lat},{lon});
-      way["tourism"](around:{radius},{lat},{lon});
-      relation["tourism"](around:{radius},{lat},{lon});
-    ); 
-    out center; 
-    """
-
-    # Anfrage an die Overpass API
-    response = requests.get(overpass_url, params={'data': overpass_query})
-
-    # Überprüfung des Statuscodes
-    if response.status_code == 200:
-        data = response.json()
-        # Wenn Ergebnisse vorhanden sind, die nächste Attraktion zurückgeben
-        if data['elements']:
-            # Hier könnte man die Entfernung ausrechnen, um die nächste Attraktion zu finden
-            # Momentan geben wir einfach die erste gefundene Attraktion zurück
-            return data['elements'][0]
-        else:
-            return None
-    else:
-        print(f"Fehler beim Abrufen der Daten: {response.status_code}")
-        return None
-
-
-def get_nearest_landmark2(lat:float, lon:float, radius=500):
-    # Query: Suche im Radius um lat/lon nach "tourism"-Tags
-    overpass_url = "https://overpass-api.de/api/interpreter"
-    overpass_query = f"""
-    [out:json];
-    node["tourism"](around:{radius},{lat},{lon});
-    out body;
-    """
-
-    response = requests.get(overpass_url, params={'data': overpass_query})
-    if response.status_code == 200:
-        try:
-            data = response.json()
-        except ValueError:
-            print("Die Antwort konnte nicht als JSON decodiert werden.")
-            print("Antwortinhalt:", response.text)
-    else:
-        print(f"Fehler beim Abrufen der Daten: {response.status_code}")
-        print("Antwortinhalt:", response.text)
-
-    if data['elements']:
-        # Das erste gefundene Element zurückgeben
-        log.debug(f"Found {len(data['elements'])} nearest landmarks")
-        return data['elements'][0].get('tags', {}).get('name', 'Unbekannte Landmark')
-    return "None"
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000  # Meter
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    return 2 * R * atan2(sqrt(a), sqrt(1 - a))
 
 def extract_mp3_front_cover(mp3_path: str) -> Image.Image | None:
     base, _ = os.path.splitext(mp3_path)
@@ -605,6 +513,55 @@ def assert_utf8(text: str) -> str:
     except UnicodeEncodeError:
         raise ValueError("Text is not valid UTF-8")
     return text
+
+def write_mp3_metadata(path: Path, image2text: str, transcript: str):
+    log.info(f"Writing AI metadata to {path}")
+    atime, mtime = _preserve_file_times(path)
+
+    # Lade die MP3-Datei
+    try:
+        audio = MP3(path, ID3=ID3)
+    except ID3NoHeaderError:
+        # Wenn die Datei keinen ID3-Header hat, erstelle einen neuen
+        audio.add_tags()
+
+    # Setze die Tags
+    if image2text:
+        audio.tags.add(COMM(encoding=3, lang='eng', desc='Comment', text=image2text))  # Comment
+    if transcript:
+        audio.tags.add(USLT(encoding=3, lang='eng', desc='Lyrics', text=transcript))   # Lyrics
+        audio.tags.add(USLT(encoding=3, lang='eng', desc='UnsynchronizedLyrics', text=transcript))  # UnsynchronizedLyrics
+        # XMP-aimedia:Transcript wird in MP3 nicht unterstützt, dafür könntest du das als Kommentar umsetzen
+        audio.tags.add(COMM(encoding=3, lang='eng', desc='Transcript', text=transcript))  # Transcript
+
+    # Speichere die Änderungen
+    audio.save()
+    _restore_file_times(path, atime, mtime)
+
+def delete_mp3_metadata(path: Path):
+    log.info(f"Deleting AI metadata from {path}")
+    atime, mtime = _preserve_file_times(path)
+    try:
+        audio = MP3(path, ID3=ID3)
+    except ID3NoHeaderError:
+        log.warning(f"No ID3 header found in {path}. No tags to delete.")
+        return  # Wenn kein Header vorhanden ist, gibt es nix zu tun
+
+    # Lösche die entsprechenden Tags
+    if audio.tags is not None:
+        if 'COMM' in audio.tags:
+            del audio.tags['COMM']  # Löscht den Comment
+        if 'USLT::Lyrics' in audio.tags:
+            del audio.tags['USLT::Lyrics']  # Löscht die Lyrics
+        if 'USLT::UnsynchronizedLyrics' in audio.tags:
+            del audio.tags['USLT::UnsynchronizedLyrics']  # Löscht die Unsynchronized Lyrics
+        if 'COMM::Transcript' in audio.tags:
+            del audio.tags['COMM::Transcript']  # Löscht das Transcript
+
+    # Speichere die Änderungen
+    audio.save()
+    _restore_file_times(path, atime, mtime)
+
 #
 # Schreibe AI Metadaten (Bildschreibung, ...) ins Video-File.
 def write_ai_metadata(
@@ -623,46 +580,60 @@ def write_ai_metadata(
             "utf8" ]
     args.append( "-XMP:CreatorTool=AI MediaAnalyzer AI")
     if kind == "audio":
-        args.append(f"-Comment={image2text}")     # Cover Bild Beschreibung
-        args.append(f"-ID3:Lyrics={transcript}")
-        args.append(f"-ID3v2:UnsynchronizedLyrics={transcript}")
-        args.append(f"-XMP-aimedia:Transcript={transcript}")
-    elif kind == "image":
-        args.append(f"-XMP:Location={adr_mark}")
-        args.append(f"-XMP:FullAddress={adr_mark}")
-        args.append(f"-XMP:Description={image2text}")
-        args.append(f"-IPTC:Caption-Abstract={image2text}")
-        args.append(f"-XMP:Transcript={transcript}")  # sollte leer sein
-        args.append(f"-XMP-dc:subject={persons}")
-        args.append(f"-XMP:Iptc4xmpExt:PersonInImage={persons}")
-    elif kind == "video":
-        args.append(f"-XMP:Location={adr_mark}")
-        args.append(f"-QuickTime:LocationName={adr_mark}")
-        args.append(f"-XMP:FullAddress={adr_mark}")
-        args.append(f"-QuickTime:Description={image2text}")
-        args.append(f"-XMP:Description={image2text}")
-        args.append(f"-XMP-iptcExt:Transcript={transcript}") # Profi Transcript
-        args.append(f"-XMP:Transcript={transcript}") # Transcript
-        args.append(f"-XMP-dc:subject={persons}")
-        args.append(f"-XMP:Iptc4xmpExt:PersonInImage={persons}")
-    try:
-        if et is None:
-            with ExifToolHelper(encoding="utf-8") as et:
-                log.warning("write_ai_metadata() Programming performance issue: exiftool et is None, therefore CPU costly instanciation. ")
+        # exiftool unterstützt Schreiben von MP3 nicht, daher separate Funktion:
+        #args.append(f"-Comment={image2text}")     # Cover Bild Beschreibung
+        #args.append(f"-ID3:Lyrics={transcript}")
+        #args.append(f"-ID3v2:UnsynchronizedLyrics={transcript}")
+        #args.append(f"-XMP-aimedia:Transcript={transcript}")
+
+        write_mp3_metadata(path, image2text, transcript)
+    else:
+        if kind == "image":
+            if adr_mark and adr_mark != "<error>":
+                args.append(f"-XMP:Location={adr_mark}")
+                args.append(f"-XMP:FullAddress={adr_mark}")
+            if image2text:
+                args.append(f"-XMP:Description={image2text}")
+                args.append(f"-IPTC:Caption-Abstract={image2text}")
+            if transcript and transcript != "<error>":
+                args.append(f"-XMP:Transcript={transcript}")  # sollte leer sein
+            if persons:
+                args.append(f"-XMP-dc:subject={persons}")
+                args.append(f"-XMP:Iptc4xmpExt:PersonInImage={persons}")
+        elif kind == "video":
+            if adr_mark and adr_mark != "<error>":
+                args.append(f"-XMP:Location={adr_mark}")
+                args.append(f"-QuickTime:LocationName={adr_mark}")
+                args.append(f"-XMP:FullAddress={adr_mark}")
+            if image2text:
+                args.append(f"-QuickTime:Description={image2text}")
+                args.append(f"-XMP:Description={image2text}")
+            if transcript:
+                args.append(f"-XMP-iptcExt:Transcript={transcript}") # Profi Transcript
+                args.append(f"-XMP:Transcript={transcript}") # Transcript
+            if persons:
+                args.append(f"-XMP-dc:subject={persons}")
+                args.append(f"-XMP:Iptc4xmpExt:PersonInImage={persons}")
+        try:
+            if et is None:
+                with ExifToolHelper(encoding="utf-8") as et:
+                    log.warning("write_ai_metadata() Programming performance issue: exiftool et is None, therefore CPU costly instanciation. ")
+                    et._encoding = "utf-8"
+                    et.execute(*args, str(path))
+            else:
                 et._encoding = "utf-8"
                 et.execute(*args, str(path))
-        else:
-            et._encoding = "utf-8"
-            et.execute(*args, str(path))
+        except exiftool.exceptions.ExifToolExecuteError as e:
+            log.error(f"ExifTool Error: {e.stderr}")  # Das hier verrät den echten Grund!
+            log.exception("write_ai_metadata(): ")
 
+        # Restore File times in changed file (audio, video, image)
         _restore_file_times(path, atime, mtime)
+        # Delete the *_original files created by EXIFTOOL, when new file exists.
         file_orig:Path = Path(f"{path}_original")
         if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
-            file_orig.unlink()
+                file_orig.unlink()
 
-    except exiftool.exceptions.ExifToolExecuteError as e:
-        log.error(f"ExifTool Error: {e.stderr}")  # Das hier verrät den echten Grund!
-        log.exception("write_ai_metadata(): ")
 
 #
 # Lese die AI Metadaten
@@ -718,30 +689,34 @@ def read_ai_metadata(path: Path, et) -> dict:
     }
 
 def delete_ai_metadata(path: Path, et):
-    atime, mtime = _preserve_file_times(path)
-
-    et.execute(
-        "-ID3:Comment=",
-        "-File:Comment=",
-        "-ID3:Lyrics=",
-        "-ID3:UnsynchronizedLyrics=",
-        "-XMP:FullAddress=",
-        "-XMP:Location=",
-        "-XMP:Description=",
-        "-XMP-aimedia:Transcript=",
-        "-IPTC:Caption-Abstract=",
-        "-XMP:FullAddress=",
-        "-QuickTime:LocationName=",
-        "-QuickTime:Description=",
-        "-XMP-iptcExt:Transcript=",
-        "-XMP:Transcript=",
-        path
-    )
-    _restore_file_times(path, atime, mtime)
-    file_orig: Path = Path(f"{path}_original")
-    log.debug(f"path: {path}")
-    log.debug(f"Original file: {file_orig}")
-    if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
-        file_orig.unlink()
+    kind = get_kind_of_media(path)
+    log.info(f"delete_ai_metadata(): {path}")
+    if kind == "audio":
+        delete_mp3_metadata(path)
+    else:
+        atime, mtime = _preserve_file_times(path)
+        et.execute(
+            "-ID3:Comment=",
+            "-File:Comment=",
+            "-ID3:Lyrics=",
+            "-ID3:UnsynchronizedLyrics=",
+            "-XMP:FullAddress=",
+            "-XMP:Location=",
+            "-XMP:Description=",
+            "-XMP-aimedia:Transcript=",
+            "-IPTC:Caption-Abstract=",
+            "-XMP:FullAddress=",
+            "-QuickTime:LocationName=",
+            "-QuickTime:Description=",
+            "-XMP-iptcExt:Transcript=",
+            "-XMP:Transcript=",
+            path
+        )
+        _restore_file_times(path, atime, mtime)
+        file_orig: Path = Path(f"{path}_original")
+        log.debug(f"path: {path}")
+        log.debug(f"Original file: {file_orig}")
+        if path.exists() and path.stat().st_size > 0 and file_orig.exists() and file_orig.stat().st_size > 0:
+            file_orig.unlink()
 
 

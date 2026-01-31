@@ -18,6 +18,7 @@ import logging
 
 # Own Program parts:
 import media_tools
+import api_location
 from ai_audio import AIAudio
 from ai_image import AIImage
 from ai_face import AIFace
@@ -44,7 +45,7 @@ class MediaAnalyzerGUI:
         self._model_loading = False
         self.folder:Path = Path(Path.home() / 'Pictures')
         # GUI defaults:
-        self.model_var = StringVar(value="large-v3")
+        self.model_var = StringVar(value="small")
         self.save_transcript_var = IntVar(value=1)  # standardmäßig aktiviert
         self.interval_var = StringVar(value="20")
         self.save_frames_var = IntVar(value=0)
@@ -53,6 +54,7 @@ class MediaAnalyzerGUI:
         self.save_tags_var = IntVar(value=1)
         self.ai_faces_var = IntVar(value=1)
         self.landmark_var = IntVar(value=1)  # Calculate nearest landmark, sightseeing point <300 m)
+        self.landmark_radius_var = IntVar(value=500)
         self.face_db_dir:Path = Path("C:/TEMP/Fotos-DCIM-2023-/_FACE_IDENT/personen_db")
 
         self.create_menu()
@@ -183,7 +185,7 @@ class MediaAnalyzerGUI:
                                  "* NOMINATIM - Koordinaten zu Adresse (OpenStreetMaps basiert)")
 
 
-        # ---------------- Layout / Konfiguration ----------------
+        # ---------------- Layout / Konfiguration der GUI ----------------
     def create_top_controls(self):
         # Set default GUI variables
         log.debug("Top controls GUI creating...")
@@ -209,6 +211,9 @@ class MediaAnalyzerGUI:
         Label(self.config_frame, text="⏱ Video Analyse Interval (sec):", font=("Arial", 11)).grid(row=1, column=0, sticky="W", padx=5)
         ttk.Entry(self.config_frame, textvariable=self.interval_var, width=6).grid(row=1, column=1, sticky="W", padx=5)
         Checkbutton(self.config_frame, text="Save Frames", variable=self.save_frames_var).grid(row=1, column=2, sticky="W")
+        Label(self.config_frame, text="Umkreissuche POIs:", font=("Arial", 11)).grid(row=1, column=3,
+                                                                                                  sticky="W", padx=5)
+        ttk.Entry(self.config_frame, textvariable=self.landmark_radius_var, width=6).grid(row=1, column=4, sticky="W", padx=5)
 
         # --- Zeile 3: Ordner/File Wahl ---
         Label(self.config_frame, text="📂 Analyse File/Ordner:", font=("Arial", 11)).grid(row=2, column=0, sticky="W", padx=5, pady=(10,0))
@@ -243,7 +248,7 @@ class MediaAnalyzerGUI:
         table_frame = Frame(self.root)
         table_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Landmark", "Persons", "Image", "Audio")
+        cols = ("File", "Type", "Date", "Lat", "Lon", "Length", "Address", "Point of Interest", "Persons", "Image", "Audio")
         self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=20)
         for col in cols:
             self.tree.heading(col, text=col, command=lambda c=col: self.sort_column(c, False))
@@ -751,7 +756,7 @@ class MediaAnalyzerGUI:
 
     # Face ID folder (directory with subdirectories named like the persons which are stored in the subdirectories
     def choose_facedb(self):
-        self.face_db_dir = Path(filedialog.askdirectory(title="FaceDB wählen"))
+        self.face_db_dir = Path((title="FaceDB wählen"))
         if self.face_db_dir and self.face_db_dir.exists():
             self.ai_face.set_db_path(self.face_db_dir)
 
@@ -844,18 +849,21 @@ class MediaAnalyzerGUI:
                     audio_text:str = meta_ai.get("transcript", "")
                     self._update_tree_columns(item_id, rec)
 
+                    if rec["Lat"] and rec["Lon"]:
+                        lat = float(rec['Lat'])
+                        lon = float(rec['Lon'])
+                        items = api_location.get_pois_nearby(lat, lon, radius=500, top_n=15, max_per_category=3)
+                        log.info(f"get_pois_nearby={items}")
+                        if items:
+                            item = items[0]
+                            rec['Landmark'] = f"{item['name']} – {item['distance_m']} m [{item['node_type']}:{item['subtype']}] "
+                        else:
+                            rec['Landmark'] = "No POI"
+                        log.info("get_pois_nearby()=%s",rec['Landmark'])
                     if not rec["Address"]:
                         if rec["Lat"] and rec["Lon"]:
-                            rec["Address"], rec["Landmark"] = media_tools.reverse_geocode(float(rec["Lat"]), float(rec["Lon"]))
-                    if not rec["Landmark"]:
-                        if rec["Lat"] and rec["Lon"]:
-                            rec["Landmark"] = media_tools.get_nearest_landmark(float(rec["Lat"]), float(rec["Lon"]), radius=500)
-
-                    if rec["Lat"] and rec["Lon"] and not rec["Landmark"]:
-                        log.info(f"Lat: {rec['Lat']}, Lon: {rec['Lon']}")
-                        rec["Landmark"] = media_tools.get_nearest_landmark(float(rec["Lat"]), float(rec["Lon"]),radius=500)
-                        log.info(f"landmark_finder={rec['Landmark']}")
-                        self._update_tree_columns(item_id, rec)
+                            rec["Address"] = api_location.reverse_geocode(float(rec["Lat"]), float(rec["Lon"]))
+                    self._update_tree_columns(item_id, rec)
                     if len(image_text) < 4:
                         # Mache Image Beschreibung sofort
                         if kind == "image":
