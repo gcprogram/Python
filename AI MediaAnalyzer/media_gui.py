@@ -756,7 +756,7 @@ class MediaAnalyzerGUI:
 
     # Face ID folder (directory with subdirectories named like the persons which are stored in the subdirectories
     def choose_facedb(self):
-        self.face_db_dir = Path((title="FaceDB wählen"))
+        self.face_db_dir = Path(filedialog.askdirectory(title="FaceDB wählen"))
         if self.face_db_dir and self.face_db_dir.exists():
             self.ai_face.set_db_path(self.face_db_dir)
 
