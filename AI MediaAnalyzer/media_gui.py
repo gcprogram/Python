@@ -762,20 +762,28 @@ class MediaAnalyzerGUI:
 
     # ---------------- Analyse ----------------
     def choose_folder(self):
-        self.folder = Path(filedialog.askdirectory(title="Verzeichnis wählen"))
-        if self.folder:
-            self.current_folder = self.folder
-            threading.Thread(target=self.analyze_folder, args=(self.folder,), daemon=True).start()
+        directory = filedialog.askdirectory(title="Verzeichnis wählen")
+        if directory:
+            self.folder = Path(directory)
+            if self.folder:
+                self.current_folder = self.folder
+                threading.Thread(target=self.analyze_folder, args=(self.folder,), daemon=True).start()
+        else:
+            log.info("Abort Directory selection.")
 
     def choose_single_file(self):
-        file:Path = Path(filedialog.askopenfilename(
+        filename = filedialog.askopenfilename(
             title="Datei wählen",
             filetypes=[("Medien", "*.jpg *.jpeg *.png *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac"), ("Alle Dateien", "*.*")]
-        ))
-        if file:
-            self.folder = file.parent
-            self.current_folder = self.folder
-            threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
+        )
+        if filename:
+            file:Path = Path(filename)
+            if file:
+                self.folder = file.parent
+                self.current_folder = self.folder
+                threading.Thread(target=self.analyze_single_file, args=(file,), daemon=True).start()
+        else:
+            log.info("Abort file selection.")
 
     #
     # Hauptroutine liest files vom file_path und füllt die Tabelle.
