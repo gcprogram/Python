@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import logging
+from DocumentProcessor import DocumentProcessor # Verarbeitung von Dokumenten für Übersetzungen
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -20,6 +21,7 @@ CONFIG_FILE = "config.json"
 
 class ChatApp:
     def __init__(self, master):
+        self.model_menu = None
         self.master = master
         master.title("Chat mit KI")
 
@@ -78,7 +80,16 @@ class ChatApp:
         #self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.last_type = None  # Merken, was zuletzt ausgegeben wurde
+        # Übersetzer aktivieren
+        self.processor = DocumentProcessor(max_chunk_chars=6000)
 
+        # Standard-Prompts (könnten auch in die Config)
+        self.translation_prompt = "Du bist ein professioneller Übersetzer für [Zielsprache]. Beachte den Stil: [Formell/Informell]. Fachbegriffe: [Glossar]."
+        self.glossary = ""
+
+        # UI Element für den Prompt (vereinfacht als Attribut,
+        # könnte man in ein Textfeld in der GUI auslagern)
+        self.system_instructions = tk.StringVar(value=self.translation_prompt)
         # Konfigurationsdatei laden
         self.load_config()
 
@@ -172,7 +183,7 @@ class ChatApp:
             log.info("< load_models()")
 
         except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler beim Laden der Modelle: {e}")
+            messagebox.showerror("Fehler", f"Fehler beim Laden der Modellliste: {e}")
             log.error("< load_models()")
 
     def get_models(self):
@@ -188,10 +199,18 @@ class ChatApp:
                 log.info("< get_models()")
                 return response.json().get("models", [])
             else:
-                log.error("< get_models(): Falscher Statuswert bei Laden der Modell.")
+                log.error("< get_models(): Falscher Statuswert bei Laden der Modellliste.")
+                self.master.after(0, lambda: [
+                    self.status_var.set("Falscher Statuswert bei Laden der Modellliste"),
+                    self.progress.configure(style="red.Horizontal.TProgressbar", value=100)
+                ])
                 return []
         except Exception as e:
-            log.exception("< get_models(): Exception ", e)
+                err_short = str(e)[:40] + "..." if len(str(e)) > 40 else str(e)
+                self.master.after(0, lambda: [
+                    self.status_var.set(f"< get_models(): {err_short}"),
+                    self.progress.configure(style="red.Horizontal.TProgressbar", value=100)
+                ])
 
     def save_settings(self):
         log.info("> save_settings()")
@@ -256,15 +275,33 @@ class ChatApp:
 
                                 # FALL 1: Modell lädt noch (Progress-Anzeige)
                                 if chunk_type == "model_load.progress":
-                                    progress = chunk.get("progress", 0) * 100
-                                    # Update der Status-Bar im Hauptthread
-                                    self.master.after(0, lambda p=progress: self.status_var.set(
-                                        f"Modell wird geladen: {p:.1f}%"))
+                                    p_value = chunk.get("progress", 0)
+
+                                    if self.load_start_time is None:
+                                        self.load_start_time = time.time()
+
+                                    # Berechnung der Restzeit
+                                    elapsed = time.time() - self.load_start_time
+                                    if p_value > 0:
+                                        total_estimated_time = elapsed / p_value
+                                        remaining_time = max(0, total_estimated_time - elapsed)
+                                        time_str = f"{int(remaining_time)}s verbleibend"
+                                    else:
+                                        time_str = "Berechne..."
+
+                                    def update_p(v=p_value, t=time_str):
+                                        self.progress["value"] = v * 100
+                                        self.progress["style"] = "green.Horizontal.TProgressbar"
+                                        self.status_var.set(f"Modell lädt... ({t})")
+
+                                    self.master.after(0, update_p)
 
                                 # FALL 2: Laden beendet / Prompt-Verarbeitung
                                 elif chunk_type == "model_load.end":
-                                    self.master.after(0, lambda: self.status_var.set(
-                                        "Modell bereit. Verarbeite Prompt..."))
+                                    self.load_start_time = None  # Reset für nächstes Mal
+                                    self.master.after(0, lambda: [self.status_var.set("Modell bereit."),
+                                                                  self.progress.configure(value=100)])
+
 
                                 # FALL 3: Echtes Streaming (Reasoning / Message)
                                 # Delta-Events für Reasoning und Message (wie besprochen)
@@ -294,8 +331,11 @@ class ChatApp:
             self.master.after(0, lambda: self.chat_area.insert(tk.END,
                                                                "\nFehler: Verbindung zum Server zeitüberschreitung.\n"))
         except Exception as e:
-            log.exception("Schwerer Fehler in chat_with_ai:")
-            self.master.after(0, lambda: self.chat_area.insert(tk.END, f"\nVerbindungsfehler: {e}\n"))
+            err_short = str(e)[:40] + "..." if len(str(e)) > 40 else str(e)
+            self.master.after(0, lambda: [
+                self.status_var.set(f"Verbindungsfehler: {err_short}"),
+                self.progress.configure(style="red.Horizontal.TProgressbar", value=100)
+            ])
 
     def _update_chat_ui(self, item):
         content_type = item.get("type")
@@ -353,11 +393,84 @@ class ChatApp:
         log.info("< send_message(): after threading started")
 
     def upload_file(self):
-        file_path = filedialog.askopenfilename()
-        if file_path:
-            self.chat_area.insert(tk.END, f"Datei hochgeladen: {file_path}\n")
-            # Hier kannst du die Logik für das Hochladen der Datei einfügen.
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Dokumente", "*.txt *.pdf *.docx *.epub")]
+        )
+        if not file_path:
+            return
 
+        # Startet die Pipeline in einem eigenen Thread, um die GUI nicht zu blockieren
+        threading.Thread(target=self.process_translation_pipeline, args=(file_path,), daemon=True).start()
+
+    def process_translation_pipeline(self, file_path):
+        try:
+            self.master.after(0, lambda: self.status_var.set("Extrahiere Text..."))
+            markdown_text = self.processor.file_to_markdown(file_path)
+
+            # 1. Chunks erstellen
+            self.processor.max_chunk_chars = 4000  # Beispielwert für Übersetzung
+            chunks = self.processor.create_chunks(markdown_text)
+
+            self.master.after(0, lambda: self.chat_area.insert(tk.END,
+                                                               f"\n[System]: Dokument geladen. {len(chunks)} Chunks erstellt.\n"))
+
+            # 2. Glossar erstellen (Optionaler Schritt)
+            self.master.after(0, lambda: self.status_var.set("Erstelle Glossar..."))
+            # Wir nehmen den ersten Chunk für das Glossar (reicht oft aus)
+            self.glossary = self.generate_glossary(chunks[0])
+            self.master.after(0, lambda: self.chat_area.insert(tk.END, f"[Glossar]: {self.glossary}\n"))
+
+            # 3. Übersetzung mit Kontext-Fenster
+            previous_context = ""
+            for i, chunk in enumerate(chunks):
+                self.master.after(0, lambda: self.status_var.set(f"Übersetze Chunk {i + 1}/{len(chunks)}..."))
+
+                # Prompt zusammenbauen
+                full_prompt = (
+                    f"ANWEISUNG: {self.system_instructions.get()}\n\n"
+                    f"GLOSSAR (strikt einhalten):\n{self.glossary}\n\n"
+                    f"KONTEXT (vorheriger Abschnitt, nicht übersetzen):\n...{previous_context}\n\n"
+                    f"TEXT ZUM ÜBERSETZEN:\n{chunk}"
+                )
+
+                # Wir nutzen die bestehende chat_with_ai Logik,
+                # müssen aber warten, bis ein Chunk fertig ist.
+                # Dafür brauchen wir eine kleine Anpassung (Helper-Funktion).
+                translated_chunk = self.send_sync_request(full_prompt)
+
+                # Die letzten 200 Zeichen als Kontext für den nächsten Chunk merken
+                previous_context = chunk[-200:] if len(chunk) > 200 else chunk
+
+                self.master.after(0, lambda: self.status_var.set("Bereit"))
+
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("Fehler", f"Pipeline Fehler: {str(e)}"))
+
+    def generate_glossary(self, text_sample):
+        """Fragt die KI nach den wichtigsten Begriffen."""
+        prompt = f"Extrahiere ein Glossar der wichtigsten Fachbegriffe und Eigennamen aus diesem Text für eine Übersetzung. Antworte kurz im Format: Begriff: Übersetzung.\n\nText:\n{text_sample[:2000]}"
+        return self.send_sync_request(prompt)
+
+    def send_sync_request(self, prompt):
+        """Hilfsfunktion: Sendet Request und wartet auf die komplette Antwort (blockierend im Thread)."""
+        url = f"http://{self.ip}:{self.port}/api/v1/chat"
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        payload = {"input": prompt, "model": self.model, "stream": False}  # Stream aus für einfachere Logik hier
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            if response.status_code == 200:
+                data = response.json()
+                # Hier musst du den Pfad zum Content anpassen, je nach deiner API-Antwort-Struktur
+                result = data.get("content", "Fehler beim Abrufen der Antwort")
+
+                # UI Update im Hauptthread
+                self.master.after(0, lambda: self._update_chat_ui(
+                    {"type": "message", "content": f"\n--- Übersetzung Chunk ---\n{result}\n"}))
+                return result
+            return "Fehler"
+        except Exception as e:
+            return f"Fehler: {str(e)}"
 
 if __name__ == "__main__":
     root = tk.Tk()
