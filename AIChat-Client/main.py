@@ -539,110 +539,79 @@ class ChatApp:
 
     def run_translation_pipeline(self, file_path):
         try:
-            isTranslateGema = True if "translategemma" in self.model.lower() else False
+            is_gemma = "translategemma" in self.model.lower()
             self.master.after(0, lambda: self.status_var.set("Extrahiere Text..."))
-            # 1. Smart Chunking mit Überlappung
-            full_text = DocumentProcessor.file_to_markdown(self, file_path)
-            chunks = self.processor.create_smart_chunks(full_text, overlap_chars=300)
-            display_text = ""
 
-            if not isTranslateGema:
-                # 1. KI um Vorschläge bitten (Mapping-Prompt!)
+            # 1. Text extrahieren & Chunking
+            full_text = self.processor.file_to_markdown(file_path)
+            chunks = self.processor.create_smart_chunks(full_text, overlap_chars=300)
+
+            final_glossary = {}
+            if not is_gemma:
+                # Glossar-Logik (nur für Standard-Modelle)
                 self.master.after(0, lambda: self.status_var.set("KI analysiert Begriffe..."))
                 ai_proposal = self.generate_dictionary(chunks[0])
-
-                # 2. Mit bestehender Datei abgleichen
                 merged_dict = self.merge_dictionary_with_ai_proposal(ai_proposal)
 
-                # Text für das Bearbeitungsfenster vorbereiten
-                for k in sorted(merged_dict.keys()):
-                    display_text += f"{k.capitalize()}: {merged_dict[k]}\n"
-
-                # 3. Korrektur-Fenster anzeigen
+                display_text = "".join([f"{k.capitalize()}: {v}\n" for k, v in sorted(merged_dict.items())])
                 self.dictionary_ready_event = threading.Event()
                 self.master.after(0, lambda: self.show_dictionary_edit_window(display_text))
+                self.dictionary_ready_event.wait()
 
-                self.dictionary_ready_event.wait()  # Warten auf User
-
-                # 4. Nach Bestätigung: Speichern für das nächste Mal
-                final_dict = {}
+                # Glossar parsen
                 for line in self.final_dict.split("\n"):
                     if ":" in line:
                         parts = line.split(":", 1)
-                        final_dict[parts[0].strip().lower()] = parts[1].strip()
-                self.final_dict = final_dict
-                self.save_dictionary_file(self.final_dict)
-                self.progress.configure(style="green.Horizontal.TProgressbar", value=100/(len(chunks)+1))
-            else:
-                self.progress.configure(style="green.Horizontal.TProgressbar", value=1)
+                        final_glossary[parts[0].strip().lower()] = parts[1].strip()
+                self.save_dictionary_file(final_glossary)
 
-            # 5. Übersetzung starten - Chunks übersetzen
-            prev_context = ""
-            self.progress.configure(style="green.Horizontal.TProgressbar", value=100/(len(chunks)+1))
+            # 2. Übersetzungsschleife (Flach, keine verschachtelten Loops!)
+            self.master.after(0, lambda: self.progress.configure(value=0))
 
             for i, chunk in enumerate(chunks):
-                # ... (Rest der Übersetzung wie gehabt, aber mit self.final_dict)
-                self.master.after(0, lambda i=i: self.status_var.set(f"Übersetze Teil {i + 1}..."))
+                self.master.after(0, lambda idx=i: self.status_var.set(f"Übersetze Teil {idx + 1}/{len(chunks)}..."))
 
-                if isTranslateGema:
-                    # Pures Template ohne Schnickschnack
-                    full_prompt = chunk
+                attempts = 0
+                success = False
+                translation = ""
+
+                # Prompt-Erstellung
+                if is_gemma:
+                    current_prompt = chunk  # send_sync_request baut das Template
                 else:
-                    # Klassischer Weg mit Glossar und Kontext
-                    full_prompt = (
+                    current_prompt = (
                         f"SYSTEM: {self.translation_prompt}\n"
-                        f"GLOSSAR: {self.final_dict}\n"
-                        f"KONTEXT: {prev_context}\n\n"
+                        f"GLOSSAR: {final_glossary}\n"
                         f"TEXT:\n{chunk}"
                     )
 
-                translation = self.send_sync_request(full_prompt, timeout=300)
-                #----
-                final_translation = []
-                for i, chunk in enumerate(chunks):
-                    attempts = 0
-                    success = False
-                    current_prompt = chunk
+                # Retry-Logik bei Abbruch
+                while attempts < 2 and not success:
+                    translation = self.send_sync_request(current_prompt, timeout=300)
 
-                    while attempts < 2 and not success:
-                        translation = self.send_sync_request(current_prompt, timeout=300 + 200 * attempts)
+                    # Qualitätscheck: Endet die Übersetzung abrupt?
+                    valid_punc = ".!?;:»«\"ˮ"
+                    source_ends_punc = chunk.strip()[-1] in valid_punc
+                    target_ends_punc = translation.strip() and translation.strip()[-1] in valid_punc
 
-                        # QUALITÄTSKONTROLLE:
-                        # 1. Prüfe, ob der Quelltext mit Satzzeichen endet
-                        # QUALITÄTSKONTROLLE (Satzzeichen-Check)
-                        valid_punc = ".!?;:»«\"ˮ"
-                        source_ends_with_punc = chunk.strip()[-1] in valid_punc
-                        target_ends_with_punc = translation.strip()[-1] in valid_punc
+                    if source_ends_punc and not target_ends_punc:
+                        log.warning(f"Chunk {i + 1} unvollständig, Versuch {attempts + 1}...")
+                        attempts += 1
+                    else:
+                        success = True
 
-                        # 2. Wenn Quelle Punkt hat, aber Ziel nicht -> Abbruch vermutet
-                        if source_ends_with_punc and not target_ends_with_punc:
-                            log.warning(f"Abbruch vermutet in Chunk {i + 1}. Versuche es erneut...")
-                            attempts += 1
-                            # Trick: Wir erhöhen max_tokens oder verändern den Prompt minimal
-                            log.warning(
-                                "WARNUNG: Übersetzung unvollständig. Erhöhen max_tokens oder Wartezeit erforderlich?")
-                        else:
-                            success = True
+                # UI Update für diesen Chunk
+                display_status = "" if success else "\n[⚠️ POTENZIELL UNVOLLSTÄNDIG]"
+                output_text = f"\n--- ABSCHNITT {i + 1} ---\n{translation}{display_status}\n"
 
-                    if not success:
-                        log.warning(f"Abbruch in Chunk {i + 1} vermutet.")
-                        display_text += "\n[⚠️ POTENZIELL UNVOLLSTÄNDIG]"
-                    final_translation.append(translation)
+                self.master.after(0, lambda text=output_text: self.chat_area.insert(tk.END, text))
+                self.master.after(0, lambda val=(i + 1) * 100 / len(chunks): self.progress.configure(value=val))
 
-                    # UI Update
-                    self.master.after(0, lambda t=display_text, idx=i + 1:
-                    self.chat_area.insert(tk.END, f"\n--- ABSCHNITT {idx} ---\n{t}\n"))
-                #----
-                self.master.after(0, lambda t=translation, idx=i + 1: self.chat_area.insert(tk.END,
-                                                                                            f"\n--- CHUNK {idx} ---\n{t}\n"))
-                self.progress.configure(style="green.Horizontal.TProgressbar", value=(i+1)*100/(len(chunks)))
-
-            self.master.after(0, lambda: self.status_var.set(f"Übersetzung beendet"))
-            self.progress.configure(style="green.Horizontal.TProgressbar", value=0)
-
+            self.master.after(0, lambda: self.status_var.set("Übersetzung abgeschlossen."))
 
         except Exception as e:
-            self.master.after(0, lambda e=e: messagebox.showerror("Fehler", str(e)))
+            log.exception("Pipeline Fehler")
+            self.master.after(0, lambda err=e: messagebox.showerror("Fehler", f"Pipeline abgebrochen: {err}"))
 
     def run_safe_translation(self, full_text):
         chunks = self.processor.create_smart_chunks(full_text)
@@ -659,7 +628,7 @@ class ChatApp:
                 # QUALITÄTSKONTROLLE:
                 # 1. Prüfe, ob der Quelltext mit Satzzeichen endet
                 # QUALITÄTSKONTROLLE (Satzzeichen-Check)
-                valid_punc = ".!?;:»«\"ˮ"
+                valid_punc = ".!?;:»«\"ˮ“"
                 source_ends_with_punc = chunk.strip()[-1] in valid_punc
                 target_ends_with_punc = translation.strip()[-1] in valid_punc
 
@@ -756,14 +725,6 @@ class ChatApp:
         except Exception as e:
             log.exception(f"Schwerer Fehler: {str(e)}")
             return f"Fehler: {str(e)}"
-
-
-    def send_message(self):
-        user_message = self.user_input.get("1.0", tk.END).strip()
-        if user_message:
-            self.chat_area.insert(tk.END, f"Du: {user_message}\n")
-            self.user_input.delete("1.0", tk.END)
-            threading.Thread(target=self.chat_with_ai, args=(user_message,), daemon=True).start()
 
     def generate_dictionary(self, text_sample):
         """Fragt die KI nach den wichtigsten Begriffen."""
