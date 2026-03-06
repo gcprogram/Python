@@ -1,6 +1,5 @@
 import tkinter as tk
-from contextlib import nullcontext
-from tkinter import scrolledtext, filedialog, messagebox, StringVar, OptionMenu, ttk
+from tkinter import scrolledtext, filedialog, messagebox, ttk
 import time
 import requests
 import json
@@ -18,81 +17,102 @@ log = logging.getLogger(__name__)
 
 CONFIG_FILE = "config.json"
 
+LANG_MAP = {
+    "en": "English", "de": "German", "cs": "Czech", "es": "Spanish",
+    "fr": "French", "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+    "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "tr": "Turkish"
+}
+# Inverse Map für die GUI-Auswahl
+UI_LANG_LIST = sorted([f"{name} ({code})" for code, name in LANG_MAP.items()])
+
+LANG_MAP_FULL = {
+    "af": "Afrikaans", "ar": "Arabic", "az": "Azerbaijani", "be": "Belarusian",
+    "bg": "Bulgarian", "bn": "Bengali", "ca": "Catalan", "cs": "Czech",
+    "cy": "Welsh", "da": "Danish", "de": "German", "el": "Greek",
+    "en": "English", "es": "Spanish", "et": "Estonian", "fa": "Persian",
+    "fi": "Finnish", "fr": "French", "ga": "Irish", "gl": "Galician",
+    "gu": "Gujarati", "he": "Hebrew", "hi": "Hindi", "hr": "Croatian",
+    "hu": "Hungarian", "hy": "Armenian", "id": "Indonesian", "is": "Icelandic",
+    "it": "Italian", "ja": "Japanese", "ka": "Georgian", "kk": "Kazakh",
+    "km": "Khmer", "kn": "Kannada", "ko": "Korean", "lt": "Lithuanian",
+    "lv": "Latvian", "mk": "Macedonian", "ml": "Malayalam", "mn": "Mongolian",
+    "mr": "Marathi", "ms": "Malay", "mt": "Maltese", "my": "Burmese",
+    "nl": "Dutch", "no": "Norwegian", "pa": "Punjabi", "pl": "Polish",
+    "pt": "Portuguese", "ro": "Romanian", "ru": "Russian", "sk": "Slovak",
+    "sl": "Slovenian", "sq": "Albanian", "sr": "Serbian", "sv": "Swedish",
+    "sw": "Swahili", "ta": "Tamil", "te": "Telugu", "th": "Thai",
+    "tr": "Turkish", "uk": "Ukrainian", "ur": "Urdu", "uz": "Uzbek",
+    "vi": "Vietnamese", "zh": "Chinese"
+}
 
 class ChatApp:
+    #
+    # Initialisierung und Hauptfenster
+    #
     def __init__(self, master):
-        self.model_menu = None
         self.master = master
-        master.title("Chat mit KI")
+        master.title("KI Chat und Übersetzungs-Client")
 
-        # Einstellungen button
-        self.settings_button = tk.Button(master, text="Einstellungen", command=self.open_settings)
-        self.settings_button.pack()
+        # Einstellungen laden
+        self.load_config()
+        self.processor = DocumentProcessor(max_chunk_chars=self.max_chunk_chars)
 
+        # UI Komponenten
         self.chat_area = scrolledtext.ScrolledText(master, wrap=tk.WORD, state='normal')
-        self.chat_area.pack(expand=True, fill='both')
+        self.chat_area.grid(row=0, column=0, columnspan=4, padx=10, sticky="we")
 
-        self.user_input = tk.Entry(master)
-        self.user_input.pack(fill='x')
+        #self.user_input = tk.Entry(master)
+        self.user_input = tk.Text(master, height=3, width=40)
+        self.user_input.grid(row=1, column=1, columnspan=3, rowspan=3, padx=10, pady=5,sticky="we")
+
+        self.settings_button = tk.Button(master, text="Einstellungen", command=self.open_settings)
+        self.settings_button.grid(row=22, column=0)
+
+        self.file_button = tk.Button(master, text="Datei übersetzen (Pipeline)", command=self.upload_file)
+        self.file_button.grid(row=22, column=1)
+
+        self.file_button = tk.Button(master, text="Chat speichern", command=self.save_chat)
+        self.file_button.grid(row=22, column=2)
 
         self.send_button = tk.Button(master, text="Senden", command=self.send_message)
-        self.send_button.pack()
+        self.send_button.grid(row=22, column=3)
 
-        self.file_button = tk.Button(master, text="Datei hochladen", command=self.upload_file)
-        self.file_button.pack()
+        # Status Bar & Progress
+        self.setup_statusbar()
 
-        # Konfigurationsparameter
-        self.api_key = ""
-        self.ip = ""
-        self.port = ""
-        self.model = ""
-        self.models = []
-        self.menu_options = []
-        self.response_id = ""
-        # Tags für die Formatierung definieren
+        # Formatierung
         self.chat_area.tag_configure("reasoning", background="#f5f5f5", foreground="#666666")
         self.chat_area.tag_configure("message", background="#e0e0e0", foreground="black")
         self.chat_area.tag_configure("bold", font=("Arial", 10, "bold"))
+        self.chat_area.tag_configure("system", foreground="blue", font=("Arial", 10, "italic"))
 
-        # In __init__ nach self.chat_area.tag_configure...
+        self.last_type = None
+        self.load_start_time = None
+        self.response_id = ""
 
-        # Style für die Progressbar definieren
+    #
+    # Bringt die Status Bar unter das Hauptfenster
+    #
+    def setup_statusbar(self):
         self.style = ttk.Style()
         self.style.theme_use('default')
         self.style.configure("green.Horizontal.TProgressbar", foreground='green', background='green')
         self.style.configure("red.Horizontal.TProgressbar", foreground='red', background='red')
 
-        # Status-Frame ganz unten
-        self.status_frame = tk.Frame(master, bd=1, relief=tk.SUNKEN)
-        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_frame = tk.Frame(self.master, bd=1, relief=tk.SUNKEN)
+        self.status_frame.grid(row=23, column=0, columnspan=4, padx=10, pady=10, sticky="we")
 
         self.status_var = tk.StringVar(value="Bereit")
         self.status_label = tk.Label(self.status_frame, textvariable=self.status_var, anchor=tk.W)
-        self.status_label.pack(side=tk.LEFT, padx=5)
+        self.status_label.grid(row=0, column=0, columnspan=2, padx=5)
 
         self.progress = ttk.Progressbar(self.status_frame, orient=tk.HORIZONTAL, length=150, mode='determinate',
                                         style="green.Horizontal.TProgressbar")
-        self.progress.pack(side=tk.RIGHT, padx=5, pady=2)
+        self.progress.grid(row=0, column=2, padx=5, pady=2, sticky="e")
 
-        # Status-Bar ganz unten hinzufügen
-        #self.status_var = tk.StringVar(value="Bereit")
-        #self.status_label = tk.Label(master, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        #self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
-
-        self.last_type = None  # Merken, was zuletzt ausgegeben wurde
-        # Übersetzer aktivieren
-        self.processor = DocumentProcessor(max_chunk_chars=6000)
-
-        # Standard-Prompts (könnten auch in die Config)
-        self.translation_prompt = "Du bist ein professioneller Übersetzer für [Zielsprache]. Beachte den Stil: [Formell/Informell]. Fachbegriffe: [Glossar]."
-        self.glossary = ""
-
-        # UI Element für den Prompt (vereinfacht als Attribut,
-        # könnte man in ein Textfeld in der GUI auslagern)
-        self.system_instructions = tk.StringVar(value=self.translation_prompt)
-        # Konfigurationsdatei laden
-        self.load_config()
-
+    #
+    # Konfiguration laden
+    #
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -102,51 +122,144 @@ class ChatApp:
                 self.port = config.get("port", "")
                 self.model = config.get("model", "")
                 self.models = config.get("models", [])
+                # Neue Parameter für die Übersetzung
+                self.translation_prompt = config.get("translation_prompt",
+                                                     "Übersetze den folgenden Text präzise ins Deutsche. Behalte Markdown-Formatierungen bei.")
+                self.max_chunk_chars = config.get("max_chunk_chars", 4000)
+                self.lang_source = config.get("lang_source", "en")
+                self.lang_target = config.get("lang_target", "de-DE")
+        else:
+            self.api_key = self.ip = self.port = self.model = ""
+            self.models = []
+            self.translation_prompt = "Übersetze den folgenden Text präzise ins Deutsche."
+            self.max_chunk_chars = 4000
 
+    #
+    # Konfiguration speichern
+    #
+    def save_config(self):
+        # Extrahiere den Code aus "German (de)" -> "de"
+        selection = self.source_lang_combo.get()
+        self.lang_source = selection[selection.find("(") + 1: selection.find(")")]
+        selection = self.target_lang_combo.get()
+        self.lang_target = selection[selection.find("(") + 1: selection.find(")")]
+        config = {
+            "api_key": self.token_entry.get(),
+            "ip": self.ip_entry.get(),
+            "port": self.port_entry.get(),
+            "model": self.model_var.get(),
+            "models": self.models,
+            "lang_source": self.lang_source,
+            "lang_target": self.lang_target,
+            "translation_prompt": self.prompt_text.get("1.0", tk.END).strip(),  # Speicher Prompt
+            "max_chunk_chars": int(self.chunk_entry.get())  # Speichere Chunk-Größe
+        }
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f)
+
+        self.load_config()  # Variablen neu laden
+        self.processor.max_chunk_chars = self.max_chunk_chars
+        log.info("Einstellungen gespeichert.")
+
+    #
+    # Einstellungsfenster bauen
+    #
     def open_settings(self):
         settings_window = tk.Toplevel(self.master)
         settings_window.title("Einstellungen")
+        #settings_window.geometry("600x500")
 
         # IP-Adresse
-        tk.Label(settings_window, text="IP-Adresse:").grid(row=0, column=0, padx=10, pady=5, sticky='e')
+        tk.Label(settings_window, text="IP-Adresse:").grid(row=0, column=0, padx=10, pady=5, sticky='w')
         self.ip_entry = tk.Entry(settings_window)
-        self.ip_entry.insert(0, self.ip)  # Eintrag mit aktuellem Wert vorbelegen
-        self.ip_entry.grid(row=0, column=1, padx=10, pady=5)
+        self.ip_entry.insert(0, self.ip)
+        self.ip_entry.grid(row=0, column=1, padx=10, sticky='w')
 
         # Port
-        tk.Label(settings_window, text="Port:").grid(row=1, column=0, padx=10, pady=5, sticky='e')
+        tk.Label(settings_window, text="Port:").grid(row=1, column=0, padx=10, pady=5, sticky='w')
         self.port_entry = tk.Entry(settings_window)
-        self.port_entry.insert(0, self.port)  # Eintrag mit aktuellem Wert vorbelegen
-        self.port_entry.grid(row=1, column=1, padx=10, pady=5)
+        self.port_entry.insert(0, self.port)
+        self.port_entry.grid(row=1, column=1, padx=10, sticky='w')
 
         # API-Schlüssel
-        tk.Label(settings_window, text="API-Schlüssel:").grid(row=2, column=0, padx=10, pady=5, sticky='e')
+        tk.Label(settings_window, text="API-Schlüssel:").grid(row=2, column=0, padx=10, pady=5, sticky='w')
         self.token_entry = tk.Entry(settings_window, show="*")
-        self.token_entry.insert(0, self.api_key)  # Eintrag mit aktuellem Wert vorbelegen
-        self.token_entry.grid(row=2, column=1, padx=10, pady=5)
+        self.token_entry.insert(0, self.api_key)
+        self.token_entry.grid(row=2, column=1, padx=10, sticky='w')
 
-        if self.ip and self.port and self.api_key:
-            self.load_models()
+        # Übersetzungs-Prompt
+        tk.Label(settings_window, text="Übersetzung Prompt:").grid(row=3, column=0, padx=10, pady=5, sticky='nw')
+        self.prompt_text = tk.Text(settings_window, height=4, width=41)
+        self.prompt_text.insert("1.0", self.translation_prompt)
+        self.prompt_text.grid(row=3, column=1, padx=10, pady=5, sticky='w')
 
-        # Modell
-        tk.Label(settings_window, text="Modell:").grid(row=3, column=0, padx=10, pady=5, sticky='e')
-        self.model_var = tk.StringVar(settings_window)
-        self.model_var.set(self.model)  # Vorbelegen des aktuellen Modells
-        # Falls die Liste leer sein könnte, einen Standardwert setzen
-        menu_options = self.models
-        if not self.models:
-            menu_options = ["Keine Modelle verfügbar"]
+        # Chunk Größe
+        tk.Label(settings_window, text="Teilstücklänge:").grid(row=4, column=0, padx=10, pady=5, sticky='w')
+        self.chunk_entry = tk.Entry(settings_window)
+        self.chunk_entry.insert(0, str(self.max_chunk_chars))
+        self.chunk_entry.grid(row=4, column=1, padx=10, sticky='w')
+
+        tk.Label(settings_window, text="Original/Zielsprache:").grid(row=5, column=0, padx=10, pady=5)
+#        options_lang = [ "de-DE", "en", "es-ES", "cs-CZ", "fr", "it", "nl", "pl", "ru", "zh-CN",
+#                         "ja-JP","ko-KR", "tr-TR", "pl-PL", "sv-SE" ]
+#        self.langsource_var = tk.StringVar(settings_window, value=self.lang_source)
+#        self.langtarget_var = tk.StringVar(settings_window, value=self.lang_target)
+#        self.menu_langsource = tk.OptionMenu(settings_window, self.langsource_var, *options_lang)
+#        self.menu_langtarget = tk.OptionMenu(settings_window, self.langtarget_var, *options_lang)
+#        self.menu_langsource.grid(row=5, column=1, padx=10, pady=5, sticky="w")
+#        self.menu_langtarget.grid(row=5, column=1, padx=10, pady=5, sticky="e")
+
+        # Neue Combobox für Sprachenwahl
+        self.source_lang_combo = ttk.Combobox(settings_window, values=UI_LANG_LIST)
+        self.target_lang_combo = ttk.Combobox(settings_window, values=UI_LANG_LIST)
+        # Setze aktuellen Wert (muss aus Code wieder in den UI-Namen gewandelt werden)
+        current_source_val = f"{LANG_MAP.get(self.lang_source)} ({self.lang_source})"
+        self.source_lang_combo.set(current_source_val)
+        current_target_val = f"{LANG_MAP.get(self.lang_target)} ({self.lang_target})"
+        self.source_lang_combo.set(current_source_val)
+        self.target_lang_combo.set(current_target_val)
+        self.source_lang_combo.grid(row=5, column=1, sticky="w", padx=10)
+        self.target_lang_combo.grid(row=5, column=1, sticky="e", padx=10)
+
+
+
+        # Modell Auswahl
+        tk.Label(settings_window, text="Modell:").grid(row=6, column=0, padx=10, pady=5)
+        self.model_var = tk.StringVar(settings_window, value=self.model)
+        menu_options = self.models if self.models else ["Keine Modelle"]
         self.model_menu = tk.OptionMenu(settings_window, self.model_var, *menu_options)
-        self.model_menu.grid(row=3, column=1, padx=10, pady=5)
+        self.model_menu.grid(row=6, column=1, padx=10, sticky='w')
+
+        # Container-Frame für die Buttons ganz unten
+        button_frame = tk.Frame(settings_window)
+        button_frame.grid(row=7, column=0, columnspan=2, pady=20)
 
         # Modelle laden Button
-        self.load_models_button = tk.Button(settings_window, text="Modelle laden", command=self.load_models)
-        self.load_models_button.grid(row=4, column=0, padx=10, pady=5)
+        self.load_models_button = tk.Button(button_frame, text="Modelle laden", command=self.load_models)
+        self.load_models_button.pack(side=tk.LEFT, padx=5)
 
         # Speichern Button
-        self.save_button = tk.Button(settings_window, text="Speichern", command=self.save_settings)
-        self.save_button.grid(row=4, column=1, padx=10, pady=5)
+        save_btn = tk.Button(
+            button_frame,
+            text="Speichern",
+            command=lambda: [self.save_config()],
+            width=15
+        )
+        save_btn.pack(side=tk.LEFT, padx=5)
 
+        # Schließen / Abbrechen Button
+        close_btn = tk.Button(
+            button_frame,
+            text="Schließen",
+            command=settings_window.destroy,
+            width=15
+        )
+        close_btn.pack(side=tk.RIGHT, padx=5)
+
+
+    #
+    # Holt KI-Model vom KI-Server und packt sie in die Dropdownliste.
+    #
     def load_models(self):
         log.info("> load_models()")
         try:
@@ -154,7 +267,7 @@ class ChatApp:
             # Ersetze die URL durch deine tatsächliche API-Endpunkt-URL
             # response = requests.get(f"http://{self.ip}:{self.port}/v1/models")
             # data = response.json()
-            data = self.get_models()
+            data = self._get_models()
             log.info(f"Modelle stehen zur Verfügung: {data}")
 
             # 2. Die "key"-Elemente extrahieren
@@ -186,7 +299,10 @@ class ChatApp:
             messagebox.showerror("Fehler", f"Fehler beim Laden der Modellliste: {e}")
             log.error("< load_models()")
 
-    def get_models(self):
+    #
+    # Requested die Modelle vom Server.
+    #
+    def _get_models(self):
         log.info("> get_models()")
         url = f"http://{self.ip}:{self.port}/api/v1/models"
         headers = {
@@ -194,7 +310,7 @@ class ChatApp:
             "Content-Type": "application/json"
         }
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 log.info("< get_models()")
                 return response.json().get("models", [])
@@ -205,6 +321,20 @@ class ChatApp:
                     self.progress.configure(style="red.Horizontal.TProgressbar", value=100)
                 ])
                 return []
+
+        except requests.exceptions.ConnectTimeout:
+            log.error("Connection Timeout.")
+
+        except requests.exceptions.ReadTimeout:
+            log.error("Der Server hat die Verbindung akzeptiert, aber braucht zu lange zum Antworten.")
+
+        except requests.exceptions.Timeout:
+            # Dies fängt beide obigen Fälle ab
+            log.error("Allgemeiner Zeitüberschreitungsfehler.")
+
+        except requests.exceptions.RequestException as e:
+            # Fängt alle anderen Requests-Probleme ab (z.B. falsche URL)
+            log.error(f"Ein schwerwiegender Fehler ist aufgetreten:", e)
         except Exception as e:
                 err_short = str(e)[:40] + "..." if len(str(e)) > 40 else str(e)
                 self.master.after(0, lambda: [
@@ -212,28 +342,38 @@ class ChatApp:
                     self.progress.configure(style="red.Horizontal.TProgressbar", value=100)
                 ])
 
-    def save_settings(self):
-        log.info("> save_settings()")
-        self.api_key = self.token_entry.get()
-        self.ip = self.ip_entry.get()
-        self.port = self.port_entry.get()
-        self.model = self.model_var.get()
+    #
+    # Zentrale Methode zum Aufbau der Payload für die Modell-Anfrage
+    #
+    def _prepare_payload(self, message, is_translation=False):
+        """Entscheidet, welches Format (Standard oder TranslateGemma) gesendet wird."""
 
-        config = {
-            "api_key": self.api_key,
-            "ip": self.ip,
-            "port": self.port,
-            "model": self.model,
-            "models": self.models
-        }
-        self.response_id = "" # start new Chat when saving
-        self.chat_area.delete("1.0", tk.END)
+        # Check: Ist es ein TranslateGemma Modell?
+        if "translategemma" in self.model.lower():
+            # Das spezialisierte Template
+            structured_content = [
+                {
+                    "type": "text",
+                    "source_lang_code": self.lang_source,
+                    "target_lang_code": self.lang_target,
+                    "text": message
+                }
+            ]
+            log.info(f"translategemma: content={structured_content}")
+            # In den meisten APIs wird dies als 'input' oder Teil der 'messages' gesendet
+            return {
+                "model": self.model,
+                "input": structured_content,  # Viele Backends akzeptieren hier das Objekt
+                "stream": not is_translation  # Sync bei Übersetzung, Stream beim Chat
+            }
+        else:
+            # Standard-Format für normale LLMs
+            return {
+                "model": self.model,
+                "input": message,
+                "stream": not is_translation
+            }
 
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f)
-
-        log.info("Einstellungen gespeichert.")
-        log.info("< save_settings()")
 
     def chat_with_ai(self, message):
         log.info(f"> chat_with_ai() gestartet für Modell: {self.model}")
@@ -287,7 +427,7 @@ class ChatApp:
                                         remaining_time = max(0, total_estimated_time - elapsed)
                                         time_str = f"{int(remaining_time)}s verbleibend"
                                     else:
-                                        time_str = "Berechne..."
+                                        time_str = "Lade..."
 
                                     def update_p(v=p_value, t=time_str):
                                         self.progress["value"] = v * 100
@@ -380,7 +520,7 @@ class ChatApp:
 
     def send_message(self):
         log.info("> send_message(): sending message")
-        user_message = self.user_input.get()
+        user_message = self.user_input.get("1.0", tk.END).strip()
         if not user_message:
             return
 
@@ -393,87 +533,317 @@ class ChatApp:
         log.info("< send_message(): after threading started")
 
     def upload_file(self):
-        file_path = filedialog.askopenfilename(
-            filetypes=[("Dokumente", "*.txt *.pdf *.docx *.epub")]
+        file_path = filedialog.askopenfilename(filetypes=[("Dokumente", "*.txt *.pdf *.docx *.epub")])
+        if file_path:
+            threading.Thread(target=self.run_translation_pipeline, args=(file_path,), daemon=True).start()
+
+    def run_translation_pipeline(self, file_path):
+        try:
+            isTranslateGema = True if "translategemma" in self.model.lower() else False
+            self.master.after(0, lambda: self.status_var.set("Extrahiere Text..."))
+            # 1. Smart Chunking mit Überlappung
+            full_text = DocumentProcessor.file_to_markdown(self, file_path)
+            chunks = self.processor.create_smart_chunks(full_text, overlap_chars=300)
+            display_text = ""
+
+            if not isTranslateGema:
+                # 1. KI um Vorschläge bitten (Mapping-Prompt!)
+                self.master.after(0, lambda: self.status_var.set("KI analysiert Begriffe..."))
+                ai_proposal = self.generate_dictionary(chunks[0])
+
+                # 2. Mit bestehender Datei abgleichen
+                merged_dict = self.merge_dictionary_with_ai_proposal(ai_proposal)
+
+                # Text für das Bearbeitungsfenster vorbereiten
+                for k in sorted(merged_dict.keys()):
+                    display_text += f"{k.capitalize()}: {merged_dict[k]}\n"
+
+                # 3. Korrektur-Fenster anzeigen
+                self.dictionary_ready_event = threading.Event()
+                self.master.after(0, lambda: self.show_dictionary_edit_window(display_text))
+
+                self.dictionary_ready_event.wait()  # Warten auf User
+
+                # 4. Nach Bestätigung: Speichern für das nächste Mal
+                final_dict = {}
+                for line in self.final_dict.split("\n"):
+                    if ":" in line:
+                        parts = line.split(":", 1)
+                        final_dict[parts[0].strip().lower()] = parts[1].strip()
+                self.final_dict = final_dict
+                self.save_dictionary_file(self.final_dict)
+                self.progress.configure(style="green.Horizontal.TProgressbar", value=100/(len(chunks)+1))
+            else:
+                self.progress.configure(style="green.Horizontal.TProgressbar", value=1)
+
+            # 5. Übersetzung starten - Chunks übersetzen
+            prev_context = ""
+            self.progress.configure(style="green.Horizontal.TProgressbar", value=100/(len(chunks)+1))
+
+            for i, chunk in enumerate(chunks):
+                # ... (Rest der Übersetzung wie gehabt, aber mit self.final_dict)
+                self.master.after(0, lambda i=i: self.status_var.set(f"Übersetze Teil {i + 1}..."))
+
+                if isTranslateGema:
+                    # Pures Template ohne Schnickschnack
+                    full_prompt = chunk
+                else:
+                    # Klassischer Weg mit Glossar und Kontext
+                    full_prompt = (
+                        f"SYSTEM: {self.translation_prompt}\n"
+                        f"GLOSSAR: {self.final_dict}\n"
+                        f"KONTEXT: {prev_context}\n\n"
+                        f"TEXT:\n{chunk}"
+                    )
+
+                translation = self.send_sync_request(full_prompt, timeout=300)
+                #----
+                final_translation = []
+                for i, chunk in enumerate(chunks):
+                    attempts = 0
+                    success = False
+                    current_prompt = chunk
+
+                    while attempts < 2 and not success:
+                        translation = self.send_sync_request(current_prompt, timeout=300 + 200 * attempts)
+
+                        # QUALITÄTSKONTROLLE:
+                        # 1. Prüfe, ob der Quelltext mit Satzzeichen endet
+                        # QUALITÄTSKONTROLLE (Satzzeichen-Check)
+                        valid_punc = ".!?;:»«\"ˮ"
+                        source_ends_with_punc = chunk.strip()[-1] in valid_punc
+                        target_ends_with_punc = translation.strip()[-1] in valid_punc
+
+                        # 2. Wenn Quelle Punkt hat, aber Ziel nicht -> Abbruch vermutet
+                        if source_ends_with_punc and not target_ends_with_punc:
+                            log.warning(f"Abbruch vermutet in Chunk {i + 1}. Versuche es erneut...")
+                            attempts += 1
+                            # Trick: Wir erhöhen max_tokens oder verändern den Prompt minimal
+                            log.warning(
+                                "WARNUNG: Übersetzung unvollständig. Erhöhen max_tokens oder Wartezeit erforderlich?")
+                        else:
+                            success = True
+
+                    if not success:
+                        log.warning(f"Abbruch in Chunk {i + 1} vermutet.")
+                        display_text += "\n[⚠️ POTENZIELL UNVOLLSTÄNDIG]"
+                    final_translation.append(translation)
+
+                    # UI Update
+                    self.master.after(0, lambda t=display_text, idx=i + 1:
+                    self.chat_area.insert(tk.END, f"\n--- ABSCHNITT {idx} ---\n{t}\n"))
+                #----
+                self.master.after(0, lambda t=translation, idx=i + 1: self.chat_area.insert(tk.END,
+                                                                                            f"\n--- CHUNK {idx} ---\n{t}\n"))
+                self.progress.configure(style="green.Horizontal.TProgressbar", value=(i+1)*100/(len(chunks)))
+
+            self.master.after(0, lambda: self.status_var.set(f"Übersetzung beendet"))
+            self.progress.configure(style="green.Horizontal.TProgressbar", value=0)
+
+
+        except Exception as e:
+            self.master.after(0, lambda e=e: messagebox.showerror("Fehler", str(e)))
+
+    def run_safe_translation(self, full_text):
+        chunks = self.processor.create_smart_chunks(full_text)
+        final_translation = []
+
+        for i, chunk in enumerate(chunks):
+            attempts = 0
+            success = False
+            current_prompt = chunk
+
+            while attempts < 2 and not success:
+                translation = self.send_sync_request(current_prompt, timeout=300+200*attempts)
+
+                # QUALITÄTSKONTROLLE:
+                # 1. Prüfe, ob der Quelltext mit Satzzeichen endet
+                # QUALITÄTSKONTROLLE (Satzzeichen-Check)
+                valid_punc = ".!?;:»«\"ˮ"
+                source_ends_with_punc = chunk.strip()[-1] in valid_punc
+                target_ends_with_punc = translation.strip()[-1] in valid_punc
+
+                # 2. Wenn Quelle Punkt hat, aber Ziel nicht -> Abbruch vermutet
+                if source_ends_with_punc and not target_ends_with_punc:
+                    log.warning(f"Abbruch vermutet in Chunk {i + 1}. Versuche es erneut...")
+                    attempts += 1
+                    # Trick: Wir erhöhen max_tokens oder verändern den Prompt minimal
+                    log.warning("WARNUNG: Übersetzung unvollständig. Erhöhen max_tokens oder Wartezeit erforderlich?")
+                else:
+                    success = True
+
+            final_translation.append(translation)
+            # Update UI...
+
+    def show_dictionary_edit_window(self, initial_text):
+        """Öffnet ein Fenster zur manuellen Korrektur des Glossars."""
+        edit_win = tk.Toplevel(self.master)
+        edit_win.title("Dictionary prüfen & korrigieren")
+        edit_win.geometry("400x500")
+
+        tk.Label(edit_win, text="Bitte Dictionary für die Übersetzung korrigieren:", font=("Arial", 10, "bold")).pack(
+            pady=5)
+
+        txt_edit = tk.Text(edit_win, wrap=tk.WORD)
+        txt_edit.insert("1.0", initial_text)
+        txt_edit.pack(expand=True, fill='both', padx=10, pady=5)
+
+        def on_confirm():
+            self.final_dict = txt_edit.get("1.0", tk.END).strip()
+            edit_win.destroy()
+            self.dictionary_ready_event.set()  # Pipeline fortsetzen
+
+        tk.Button(edit_win, text="Dictionary bestätigen & Übersetzung starten",
+                  bg="green", fg="white", command=on_confirm).pack(pady=10)
+
+        # Falls das Fenster geschlossen wird ohne Bestätigung:
+        edit_win.protocol("WM_DELETE_WINDOW", on_confirm)
+
+    def send_sync_request(self, prompt,timeout=180):
+        """Sendet einen Request und erkennt automatisch das nötige Format."""
+        is_gemma = "translategemma" in self.model.lower()
+        # Wechsle bei Gemma auf den /v1/completions endpoint (Text-Basis)
+        # Für andere Modelle bleibt es bei /v1/chat/completions
+        endpoint = "/v1/completions" if is_gemma else "/v1/chat/completions"
+        url = f"http://{self.ip}:{self.port}{endpoint}"
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+        # Payload zusammenbauen
+        if is_gemma:
+            # Wir bilden das Jinja-Template in Python nach:
+            s_name = LANG_MAP.get(self.lang_source, "Original Language")
+            t_name = LANG_MAP.get(self.lang_target, "Target Language")
+            # Das ist das exakte Format, das dein Jinja-Template erzeugen würde:
+            full_raw_prompt = (
+                f"<start_of_turn>user\n"
+                f"You are a professional {s_name} ({self.lang_source}) to {t_name} ({self.lang_target}) translator. "
+                f"Your goal is to accurately convey the meaning and nuances of the original {s_name} text "
+                f"while adhering to {t_name} grammar, vocabulary, and cultural sensitivities.\n"
+                f"Produce only the {t_name} translation, without any additional explanations or commentary. "
+                f"Please translate the following {s_name} text into {t_name}:\n\n\n"
+                f"{prompt.strip()}<end_of_turn>\n"
+                f"<start_of_turn>model\n"
+            )
+
+            payload = {
+                "model": self.model,
+                "prompt": full_raw_prompt,  # Hier direkt als 'prompt' statt 'messages'
+                "stop": ["<end_of_turn>"],
+                "temperature": 0.0,
+                "max_tokens": 4096,
+                "stream": False
+            }
+        else:
+            # Standard-Format für normale Modelle
+            messages = [{"role": "user", "content": prompt}]
+            # Payload über die neue Factory holen
+            payload = self._prepare_payload(prompt, is_translation=True)
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            res_data = response.json()
+
+            if response.status_code != 200:
+                log.error(f"Payload gesendet: {json.dumps(payload)}")
+                return f"Fehler {response.status_code}: {response.text}"
+
+                # Text-Extraktion unterscheidet sich je nach Endpoint:
+            if is_gemma:
+                return res_data["choices"][0]["text"].strip()  # completions nutzt .text
+            else:
+                return res_data["choices"][0]["message"]["content"].strip()  # chat nutzt .message.content
+
+        except Exception as e:
+            log.exception(f"Schwerer Fehler: {str(e)}")
+            return f"Fehler: {str(e)}"
+
+
+    def send_message(self):
+        user_message = self.user_input.get("1.0", tk.END).strip()
+        if user_message:
+            self.chat_area.insert(tk.END, f"Du: {user_message}\n")
+            self.user_input.delete("1.0", tk.END)
+            threading.Thread(target=self.chat_with_ai, args=(user_message,), daemon=True).start()
+
+    def generate_dictionary(self, text_sample):
+        """Fragt die KI nach den wichtigsten Begriffen."""
+        dictionary_prompt = (
+            "Create a glossary/dictionary for translation to German. "
+            "Extract only special and technical terms, proper names, and fictional terms. Only list single or connected words."
+            "Answer in format: 'Original: Translation'\n"
+            "If no term is found, leave it as is.\n\n"
+            f"Text Example:\n{text_sample}"
         )
-        if not file_path:
+        return self.send_sync_request(dictionary_prompt, timeout=200)
+
+    def merge_dictionary_with_ai_proposal(self, ai_raw_text):
+        """Vergleicht KI-Vorschlag mit Datei und fügt nur Neues hinzu."""
+        existing_dictionary = self.load_dictionary_file()
+        new_entries_count = 0
+
+        # KI Antwort parsen (erwartet 'Begriff: Übersetzung')
+        lines = ai_raw_text.split("\n")
+        for line in lines:
+            if ":" in line:
+                parts = line.split(":", 1)
+                orig = parts[0].strip()
+                trans = parts[1].strip()
+
+                # Nur hinzufügen, wenn der Begriff (kleingeschrieben) noch nicht existiert
+                if orig.lower() not in existing_dictionary and orig:
+                    existing_dictionary[orig.lower()] = trans
+                    new_entries_count += 1
+
+        log.info(f"Dictionary-Merge: {new_entries_count} neue Begriffe gefunden.")
+        return existing_dictionary
+
+    def load_dictionary_file(self):
+        """Lädt das Dictionary aus einer Textdatei und gibt es zurück."""
+        dict = {}
+        if os.path.exists("dictionary.txt"):
+            with open("dictionary.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    if ":" in line:
+                        orig, trans = line.split(":", 1)
+                        dict[orig.strip().lower()] = trans.strip()
+        return dict
+
+    def save_dictionary_file(self, glossary_dict):
+        """Speichert das Dictionary sortiert in die Textdatei."""
+        with open("dictionary.txt", "w", encoding="utf-8") as f:
+            # Sortiert nach Originalbegriff
+            for orig in sorted(glossary_dict.keys()):
+                f.write(f"{orig.capitalize()}: {glossary_dict[orig]}\n")
+
+    def save_chat(self):
+        # Den gesamten Text aus der Chat-Area holen
+        # "1.0" steht für Zeile 1, Zeichen 0; tk.END für das Ende
+        chat_content = self.chat_area.get("1.0", tk.END).strip()
+
+        if not chat_content:
+            messagebox.showwarning("Warnung", "Der Chat ist leer und kann nicht gespeichert werden.")
             return
 
-        # Startet die Pipeline in einem eigenen Thread, um die GUI nicht zu blockieren
-        threading.Thread(target=self.process_translation_pipeline, args=(file_path,), daemon=True).start()
+        # Dateidialog öffnen
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Textdatei", "*.txt"), ("Markdown", "*.md"), ("Alle Dateien", "*.*")],
+            initialfile=f"Chat_Backup_{time.strftime('%Y%m%d-%H%M%S')}.txt"
+        )
 
-    def process_translation_pipeline(self, file_path):
-        try:
-            self.master.after(0, lambda: self.status_var.set("Extrahiere Text..."))
-            markdown_text = self.processor.file_to_markdown(file_path)
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(chat_content)
+                messagebox.showinfo("Erfolg", f"Chat wurde erfolgreich gespeichert unter:\n{file_path}")
+                log.info(f"Chat gespeichert: {file_path}")
+            except Exception as e:
+                messagebox.showerror("Fehler", f"Fehler beim Speichern: {str(e)}")
+                log.error(f"Speicherfehler: {e}")
 
-            # 1. Chunks erstellen
-            self.processor.max_chunk_chars = 4000  # Beispielwert für Übersetzung
-            chunks = self.processor.create_chunks(markdown_text)
-
-            self.master.after(0, lambda: self.chat_area.insert(tk.END,
-                                                               f"\n[System]: Dokument geladen. {len(chunks)} Chunks erstellt.\n"))
-
-            # 2. Glossar erstellen (Optionaler Schritt)
-            self.master.after(0, lambda: self.status_var.set("Erstelle Glossar..."))
-            # Wir nehmen den ersten Chunk für das Glossar (reicht oft aus)
-            self.glossary = self.generate_glossary(chunks[0])
-            self.master.after(0, lambda: self.chat_area.insert(tk.END, f"[Glossar]: {self.glossary}\n"))
-
-            # 3. Übersetzung mit Kontext-Fenster
-            previous_context = ""
-            for i, chunk in enumerate(chunks):
-                self.master.after(0, lambda: self.status_var.set(f"Übersetze Chunk {i + 1}/{len(chunks)}..."))
-
-                # Prompt zusammenbauen
-                full_prompt = (
-                    f"ANWEISUNG: {self.system_instructions.get()}\n\n"
-                    f"GLOSSAR (strikt einhalten):\n{self.glossary}\n\n"
-                    f"KONTEXT (vorheriger Abschnitt, nicht übersetzen):\n...{previous_context}\n\n"
-                    f"TEXT ZUM ÜBERSETZEN:\n{chunk}"
-                )
-
-                # Wir nutzen die bestehende chat_with_ai Logik,
-                # müssen aber warten, bis ein Chunk fertig ist.
-                # Dafür brauchen wir eine kleine Anpassung (Helper-Funktion).
-                translated_chunk = self.send_sync_request(full_prompt)
-
-                # Die letzten 200 Zeichen als Kontext für den nächsten Chunk merken
-                previous_context = chunk[-200:] if len(chunk) > 200 else chunk
-
-                self.master.after(0, lambda: self.status_var.set("Bereit"))
-
-        except Exception as e:
-            self.master.after(0, lambda: messagebox.showerror("Fehler", f"Pipeline Fehler: {str(e)}"))
-
-    def generate_glossary(self, text_sample):
-        """Fragt die KI nach den wichtigsten Begriffen."""
-        prompt = f"Extrahiere ein Glossar der wichtigsten Fachbegriffe und Eigennamen aus diesem Text für eine Übersetzung. Antworte kurz im Format: Begriff: Übersetzung.\n\nText:\n{text_sample[:2000]}"
-        return self.send_sync_request(prompt)
-
-    def send_sync_request(self, prompt):
-        """Hilfsfunktion: Sendet Request und wartet auf die komplette Antwort (blockierend im Thread)."""
-        url = f"http://{self.ip}:{self.port}/api/v1/chat"
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        payload = {"input": prompt, "model": self.model, "stream": False}  # Stream aus für einfachere Logik hier
-
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=120)
-            if response.status_code == 200:
-                data = response.json()
-                # Hier musst du den Pfad zum Content anpassen, je nach deiner API-Antwort-Struktur
-                result = data.get("content", "Fehler beim Abrufen der Antwort")
-
-                # UI Update im Hauptthread
-                self.master.after(0, lambda: self._update_chat_ui(
-                    {"type": "message", "content": f"\n--- Übersetzung Chunk ---\n{result}\n"}))
-                return result
-            return "Fehler"
-        except Exception as e:
-            return f"Fehler: {str(e)}"
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = ChatApp(root)
-    root.geometry("500x600")  # Fenstergröße setzen
+    root.geometry("700x600")
     root.mainloop()
