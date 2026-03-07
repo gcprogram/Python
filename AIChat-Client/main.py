@@ -6,6 +6,9 @@ import json
 import os
 import threading
 import logging
+import re
+from docx import Document # Benötigt
+from fpdf import FPDF  # Benötigt pip install fpdf
 from DocumentProcessor import DocumentProcessor # Verarbeitung von Dokumenten für Übersetzungen
 
 logging.basicConfig(
@@ -125,14 +128,14 @@ class ChatApp:
                 # Neue Parameter für die Übersetzung
                 self.translation_prompt = config.get("translation_prompt",
                                                      "Übersetze den folgenden Text präzise ins Deutsche. Behalte Markdown-Formatierungen bei.")
-                self.max_chunk_chars = config.get("max_chunk_chars", 4000)
+                self.max_chunk_chars = config.get("max_chunk_chars", 3500)
                 self.lang_source = config.get("lang_source", "en")
                 self.lang_target = config.get("lang_target", "de-DE")
         else:
             self.api_key = self.ip = self.port = self.model = ""
             self.models = []
             self.translation_prompt = "Übersetze den folgenden Text präzise ins Deutsche."
-            self.max_chunk_chars = 4000
+            self.max_chunk_chars = 3500
 
     #
     # Konfiguration speichern
@@ -544,7 +547,10 @@ class ChatApp:
 
             # 1. Text extrahieren & Chunking
             full_text = self.processor.file_to_markdown(file_path)
-            chunks = self.processor.create_smart_chunks(full_text, overlap_chars=300)
+            if is_gemma:
+                chunks = self.processor.create_smart_chunks(full_text, overlap_chars=0)
+            else:
+                chunks = self.processor.create_smart_chunks(full_text, overlap_chars=300)
 
             final_glossary = {}
             if not is_gemma:
@@ -569,6 +575,11 @@ class ChatApp:
             self.master.after(0, lambda: self.progress.configure(value=0))
 
             for i, chunk in enumerate(chunks):
+                # FALLUNTERSCHEIDUNG: Falls create_smart_chunks Tupel liefert (context, content)
+                if isinstance(chunk, tuple):
+                    context, content = chunk
+                else:
+                    content = chunk
                 self.master.after(0, lambda idx=i: self.status_var.set(f"Übersetze Teil {idx + 1}/{len(chunks)}..."))
 
                 attempts = 0
@@ -577,12 +588,12 @@ class ChatApp:
 
                 # Prompt-Erstellung
                 if is_gemma:
-                    current_prompt = chunk  # send_sync_request baut das Template
+                    current_prompt = content  # send_sync_request baut das Template
                 else:
                     current_prompt = (
                         f"SYSTEM: {self.translation_prompt}\n"
                         f"GLOSSAR: {final_glossary}\n"
-                        f"TEXT:\n{chunk}"
+                        f"TEXT:\n{content}"
                     )
 
                 # Retry-Logik bei Abbruch
@@ -591,18 +602,24 @@ class ChatApp:
 
                     # Qualitätscheck: Endet die Übersetzung abrupt?
                     valid_punc = ".!?;:»«\"ˮ"
-                    source_ends_punc = chunk.strip()[-1] in valid_punc
+                    source_ends_punc = content.strip()[-1] in valid_punc
                     target_ends_punc = translation.strip() and translation.strip()[-1] in valid_punc
 
                     if source_ends_punc and not target_ends_punc:
                         log.warning(f"Chunk {i + 1} unvollständig, Versuch {attempts + 1}...")
+                        display_status = "" if success else "[⚠️ POTENZIELL UNVOLLSTÄNDIG]\n"
                         attempts += 1
+                    elif not source_ends_punc and target_ends_punc:
+                        log.warning(f"Chunk {i + 1} unvollständig, Versuch {attempts + 1}...")
+                        display_status = "[⚠️ TEXTFLUSS UNTERBROCHEN]\n"
+                        attempts += 1
+                        # Die KI hat den Satz vermutlich einfach mit einem Punkt "abgehackt"
                     else:
+                        display_status = ""
                         success = True
 
                 # UI Update für diesen Chunk
-                display_status = "" if success else "\n[⚠️ POTENZIELL UNVOLLSTÄNDIG]"
-                output_text = f"\n--- ABSCHNITT {i + 1} ---\n{translation}{display_status}\n"
+                output_text = f"\n\n---Original-Anfang:\n{content[:80]}\n--- BEGINN ABSCHNITT {i + 1}\n{translation}\n--- ENDE ABSCHNITT {i+1}\n{display_status}--- Original-Ende:\n{content[-80:]}\n"
 
                 self.master.after(0, lambda text=output_text: self.chat_area.insert(tk.END, text))
                 self.master.after(0, lambda val=(i + 1) * 100 / len(chunks): self.progress.configure(value=val))
@@ -612,37 +629,6 @@ class ChatApp:
         except Exception as e:
             log.exception("Pipeline Fehler")
             self.master.after(0, lambda err=e: messagebox.showerror("Fehler", f"Pipeline abgebrochen: {err}"))
-
-    def run_safe_translation(self, full_text):
-        chunks = self.processor.create_smart_chunks(full_text)
-        final_translation = []
-
-        for i, chunk in enumerate(chunks):
-            attempts = 0
-            success = False
-            current_prompt = chunk
-
-            while attempts < 2 and not success:
-                translation = self.send_sync_request(current_prompt, timeout=300+200*attempts)
-
-                # QUALITÄTSKONTROLLE:
-                # 1. Prüfe, ob der Quelltext mit Satzzeichen endet
-                # QUALITÄTSKONTROLLE (Satzzeichen-Check)
-                valid_punc = ".!?;:»«\"ˮ“"
-                source_ends_with_punc = chunk.strip()[-1] in valid_punc
-                target_ends_with_punc = translation.strip()[-1] in valid_punc
-
-                # 2. Wenn Quelle Punkt hat, aber Ziel nicht -> Abbruch vermutet
-                if source_ends_with_punc and not target_ends_with_punc:
-                    log.warning(f"Abbruch vermutet in Chunk {i + 1}. Versuche es erneut...")
-                    attempts += 1
-                    # Trick: Wir erhöhen max_tokens oder verändern den Prompt minimal
-                    log.warning("WARNUNG: Übersetzung unvollständig. Erhöhen max_tokens oder Wartezeit erforderlich?")
-                else:
-                    success = True
-
-            final_translation.append(translation)
-            # Update UI...
 
     def show_dictionary_edit_window(self, initial_text):
         """Öffnet ein Fenster zur manuellen Korrektur des Glossars."""
@@ -689,7 +675,7 @@ class ChatApp:
                 f"Your goal is to accurately convey the meaning and nuances of the original {s_name} text "
                 f"while adhering to {t_name} grammar, vocabulary, and cultural sensitivities.\n"
                 f"Produce only the {t_name} translation, without any additional explanations or commentary. "
-                f"Please translate the following {s_name} text into {t_name}:\n\n\n"
+                f"Please translate the following Markdown text from {s_name} into {t_name}:\n\n\n"
                 f"{prompt.strip()}<end_of_turn>\n"
                 f"<start_of_turn>model\n"
             )
@@ -777,30 +763,55 @@ class ChatApp:
                 f.write(f"{orig.capitalize()}: {glossary_dict[orig]}\n")
 
     def save_chat(self):
-        # Den gesamten Text aus der Chat-Area holen
-        # "1.0" steht für Zeile 1, Zeichen 0; tk.END für das Ende
-        chat_content = self.chat_area.get("1.0", tk.END).strip()
+        # 1. Text holen und bereinigen
+        raw_content = self.chat_area.get("1.0", tk.END)
+        # Entfernt "--- ABSCHNITT X ---" Zeilen via Regex
+        clean_content = re.sub(r'--- ABSCHNITT \d+ ---', '', raw_content).strip()
 
-        if not chat_content:
-            messagebox.showwarning("Warnung", "Der Chat ist leer und kann nicht gespeichert werden.")
+        if not clean_content:
+            messagebox.showwarning("Fehler", "Nichts zum Speichern vorhanden.")
             return
 
-        # Dateidialog öffnen
         file_path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Textdatei", "*.txt"), ("Markdown", "*.md"), ("Alle Dateien", "*.*")],
-            initialfile=f"Chat_Backup_{time.strftime('%Y%m%d-%H%M%S')}.txt"
+            filetypes=[("Text", "*.txt"), ("Word", "*.docx"), ("PDF", "*.pdf"), ("EPUB", "*.epub"), ("Markdown", "*.md"), ("Alle Dateien", "*.*")]
         )
 
-        if file_path:
-            try:
+        if not file_path:
+            return
+        ext = os.path.splitext(file_path)[1].lower()
+
+        try:
+            if ext == ".docx":
+                doc = Document()
+                for line in clean_content.split('\n'):
+                    doc.add_paragraph(clean_content)
+                doc.save(file_path)
+            elif ext == ".pdf":
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_auto_page_break(auto=True, margin=15)
+                # Standardfont (Achtung: FPDF braucht für Sonderzeichen oft TrueType Fonts)
+                pdf.set_font("Arial", size=11)
+                # Text einfügen (latin-1 Encoding für FPDF Standard)
+                pdf.multi_cell(0, 10, clean_content.encode('latin-1', 'replace').decode('latin-1'))
+                pdf.output(file_path)
+            elif ext == ".epub":
+                # Vereinfachter Export als Text-EPUB
+                from ebooklib import epub
+                book = epub.EpubBook()
+                book.set_title("KI Übersetzung")
+                c1 = epub.EpubHtml(title='Kapitel 1', file_name='chap_1.xhtml', lang='de')
+                c1.content = f"<html><body><p>{clean_content.replace(chr(10), '<br/>')}</p></body></html>"
+                book.add_item(c1)
+                book.spine = ['nav', c1]
+                epub.write_epub(file_path, book)
+            else:  # Standard txt
                 with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(chat_content)
-                messagebox.showinfo("Erfolg", f"Chat wurde erfolgreich gespeichert unter:\n{file_path}")
-                log.info(f"Chat gespeichert: {file_path}")
-            except Exception as e:
-                messagebox.showerror("Fehler", f"Fehler beim Speichern: {str(e)}")
-                log.error(f"Speicherfehler: {e}")
+                    f.write(clean_content)
+
+            messagebox.showinfo("Erfolg", "Datei wurde gespeichert!")
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Speichern fehlgeschlagen: {e}")
 
 
 if __name__ == "__main__":
