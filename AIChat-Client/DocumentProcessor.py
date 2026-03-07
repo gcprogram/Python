@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 # pip install pymupdf python-docx ebooklib beautifulsoup4 lxml
 
 class DocumentProcessor:
-    def __init__(self, max_chunk_chars=6000):
+    def __init__(self, max_chunk_chars=3500):
         self.max_chunk_chars = max_chunk_chars
 
     def file_to_markdown(self, file_path):
@@ -48,6 +48,9 @@ class DocumentProcessor:
         else:
             raise ValueError(f"Dateiformat {ext} wird nicht unterstützt.")
 
+    #
+    # Wird nur noch vom main hier benutzt. Macht chunks ohne Überlappung
+    #
     def create_chunks(self, text):
         """Teilt den Text in Chunks auf, ohne Absätze zu zerreißen."""
         # Wir trennen am doppelten Zeilenumbruch (typischer Absatz)
@@ -87,54 +90,40 @@ class DocumentProcessor:
 
         return chunks
 
-    # In DocumentProcessor.py hinzufügen/ersetzen:
-
-    def create_smart_chunks(self, text, overlap_chars=300):
-        """
-        Erstellt Chunks, die an Satzenden orientiert sind und eine Überlappung besitzen.
-        """
+    def create_smart_chunks(self, text, overlap_chars=0):
         chunks = []
         start = 0
         text_len = len(text)
 
         while start < text_len:
-            # Ende des Chunks bestimmen
             end = start + self.max_chunk_chars
             if end >= text_len:
-                chunks.append(text[start:].strip())
+                # Letzter Chunk: (Kontext, Neuer Inhalt)
+                context = text[max(0, start - overlap_chars):start]
+                chunks.append((context, text[start:].strip()))
                 break
 
-            # Suche nach dem besten Trenner (Satzende) innerhalb eines Suchfensters
-            # Wir suchen rückwärts ab 'end'
-            search_window = text[end - 500:end]  # Letzte 500 Zeichen vor dem harten Limit
+            # Suche Trenner (Satzende)
+            search_window = text[end - 500:end]
             best_cut = -1
-            for separator in ['. ', '! ', '? ', '\n']:
+            # Erweitert für Texte ohne Absätze:
+            for separator in ['. ', '! ', '? ', '.<', '.\n']:
                 pos = search_window.rfind(separator)
                 if pos > best_cut:
                     best_cut = pos
 
-            if best_cut != -1:
-                actual_end = (end - 500) + best_cut + 1
-            else:
-                # Kein Satzzeichen? Nimm das letzte Leerzeichen
-                actual_end = text.rfind(' ', start, end)
-                if actual_end <= start:
-                    actual_end = end  # Harter Schnitt als Notlösung
+            actual_end = (end - 500) + best_cut + 1 if best_cut != -1 else end
 
-            chunks.append(text[start:actual_end].strip())
+            # Wir speichern (Überlappung für Kontext, Tatsächlicher neuer Text)
+            context = text[max(0, start - overlap_chars):start]
+            new_content = text[start:actual_end].strip()
+            chunks.append((context, new_content))
 
-            # Überlappung für den nächsten Chunk
-            # Wir gehen nicht zum Ende, sondern ein Stück zurück
-            start = actual_end - overlap_chars
-            # Sicherstellen, dass wir uns vorwärts bewegen
-            if start < 0: start = 0
-            if start <= chunks[-1].find(text[actual_end - overlap_chars:actual_end]):  # Verhindert Endlosschleifen
-                start = actual_end
-
+            start = actual_end
         return chunks
 # --- Beispiel der Nutzung ---
 if __name__ == "__main__":
-    processor = DocumentProcessor(max_chunk_chars=6000)
+    processor = DocumentProcessor(max_chunk_chars=4000)
 
     try:
         # Pfad zu deiner Testdatei
