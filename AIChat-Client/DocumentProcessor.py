@@ -1,4 +1,5 @@
 import os
+import re
 import fitz  # install PyMuPDF, nicht fitz!
 from docx import Document
 import ebooklib
@@ -37,13 +38,26 @@ class DocumentProcessor:
             return "\n\n".join(full_text)
 
         elif ext == '.epub':
-            book = epub.read_epub(file_path)
-            chapters = []
-            for item in book.get_items():
-                if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                    soup = BeautifulSoup(item.get_content(), 'html.parser')
-                    chapters.append(soup.get_text())
-            return "\n\n".join(chapters)
+            try:
+                book = epub.read_epub(file_path)
+                chapters = []
+                for item in book.get_items():
+                    if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                        chapters.append(item.get_content())
+
+                text = ""
+                for html_src in chapters:
+                    soup = BeautifulSoup(html_src, 'lxml-xml')
+                    # Wichtig: Text mit Leerzeichen trennen, damit Sätze nicht verkleben
+                    text += soup.get_text(separator=' ') + "\n"
+
+                if not text.strip():
+                    log.error("EPUB extraktion ergab leeren Text")
+                    return ""
+                return text
+            except Exception as e:
+                log.error(f"EPUB Fehler: {e}")
+                return ""
 
         else:
             raise ValueError(f"Dateiformat {ext} wird nicht unterstützt.")
@@ -95,32 +109,63 @@ class DocumentProcessor:
         start = 0
         text_len = len(text)
 
+        if text_len == 0:
+            return []
+
         while start < text_len:
             end = start + self.max_chunk_chars
             if end >= text_len:
-                # Letzter Chunk: (Kontext, Neuer Inhalt)
+                # Letzter Chunk
                 context = text[max(0, start - overlap_chars):start]
                 chunks.append((context, text[start:].strip()))
                 break
 
-            # Suche Trenner (Satzende)
+            # Suche Trenner (Satzende) im Fenster der letzten 500 Zeichen des Chunks
             search_window = text[end - 500:end]
             best_cut = -1
-            # Erweitert für Texte ohne Absätze:
             for separator in ['. ', '! ', '? ', '.<', '.\n']:
                 pos = search_window.rfind(separator)
                 if pos > best_cut:
                     best_cut = pos
 
+            # Wenn kein Satzzeichen gefunden wurde, nimm das Ende des Fensters
             actual_end = (end - 500) + best_cut + 1 if best_cut != -1 else end
 
-            # Wir speichern (Überlappung für Kontext, Tatsächlicher neuer Text)
+            # Falls actual_end aus irgendeinem Grund nicht voranschreitet, erzwinge Fortschritt
+            if actual_end <= start:
+                actual_end = end
+
             context = text[max(0, start - overlap_chars):start]
             new_content = text[start:actual_end].strip()
             chunks.append((context, new_content))
 
             start = actual_end
-        return chunks
+
+        return chunks  # <--- WICHTIG: Die Variable muss hier stehen!
+
+    def get_boundary_sentences(self, text, mode="last", count=2):
+        """
+        Liefert die ersten oder letzten N Sätze eines Strings zurück.
+        mode: "first" oder "last"
+        count: Anzahl der Sätze
+        """
+        if not text or not isinstance(text, str):
+            return ""
+
+        # Regex: Splittet bei . ! ? gefolgt von Leerzeichen oder Zeilenumbruch
+        # Nutzt Lookbehind (?<=[...]), um das Satzzeichen nicht zu löschen
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+
+        # Filtern: Nur Sätze mit Inhalt behalten
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 1]
+
+        if mode == "first":
+            selected = sentences[:count]
+        else:
+            selected = sentences[-count:]
+
+        return " ".join(selected)
+
 # --- Beispiel der Nutzung ---
 if __name__ == "__main__":
     processor = DocumentProcessor(max_chunk_chars=4000)
@@ -140,3 +185,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(f"Fehler: {e}")
+
