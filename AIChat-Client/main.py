@@ -316,7 +316,17 @@ class ChatApp:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 log.info("< get_models()")
+                self.master.after(0, lambda: [
+                    self.status_var.set("Erfolgreiche Modellabfrage."),
+                    self.progress.configure(style="green.Horizontal.TProgressbar", value=100)
+                ])
                 return response.json().get("models", [])
+            elif response.status_code == 401:
+                log.error("< get_models(): Falsches API Token.")
+                self.master.after(0, lambda: [
+                    self.status_var.set("Nicht authorisiert."),
+                    self.progress.configure(style="red.Horizontal.TProgressbar", value=100)
+                ])
             else:
                 log.error("< get_models(): Falscher Statuswert bei Laden der Modellliste.")
                 self.master.after(0, lambda: [
@@ -528,7 +538,7 @@ class ChatApp:
             return
 
         self.chat_area.insert(tk.END, f"Du: {user_message}\n")
-        self.user_input.delete(0, tk.END)
+        self.user_input.delete("1.0", tk.END)
         self.last_type = None  # Reset für die neue Antwort
 
         # Thread starten, damit die GUI flüssig bleibt
@@ -547,10 +557,15 @@ class ChatApp:
 
             # 1. Text extrahieren & Chunking
             full_text = self.processor.file_to_markdown(file_path)
+            if not full_text or len(full_text.strip()) == 0:
+                raise ValueError("Die Datei konnte nicht gelesen werden oder ist leer.")
             if is_gemma:
                 chunks = self.processor.create_smart_chunks(full_text, overlap_chars=0)
             else:
                 chunks = self.processor.create_smart_chunks(full_text, overlap_chars=300)
+
+            if not chunks:
+                raise ValueError("Das Chunking hat keine Abschnitte erzeugt.")
 
             final_glossary = {}
             if not is_gemma:
@@ -599,7 +614,7 @@ class ChatApp:
                 # Retry-Logik bei Abbruch
                 while attempts < 2 and not success:
                     translation = self.send_sync_request(current_prompt, timeout=300)
-
+                    formatted_output = f"--- BEGINN ABSCHNITT {i + 1} ---\n{translation}\n--- ENDE ABSCHNITT {i + 1} ---\n"
                     # Qualitätscheck: Endet die Übersetzung abrupt?
                     valid_punc = ".!?;:»«\"ˮ"
                     source_ends_punc = content.strip()[-1] in valid_punc
@@ -619,7 +634,9 @@ class ChatApp:
                         success = True
 
                 # UI Update für diesen Chunk
-                output_text = f"\n\n---Original-Anfang:\n{content[:80]}\n--- BEGINN ABSCHNITT {i + 1}\n{translation}\n--- ENDE ABSCHNITT {i+1}\n{display_status}--- Original-Ende:\n{content[-80:]}\n"
+                anfang = self.processor.get_boundary_sentences(content, mode='first',count=2)
+                ende = self.processor.get_boundary_sentences(content, mode='last',count=2)
+                output_text = f"\n\n---Original-Anfang:\n{anfang}\n--- BEGINN ABSCHNITT {i + 1}\n{translation}\n--- ENDE ABSCHNITT {i+1}\n{display_status}--- Original-Ende:\n{ende}\n"
 
                 self.master.after(0, lambda text=output_text: self.chat_area.insert(tk.END, text))
                 self.master.after(0, lambda val=(i + 1) * 100 / len(chunks): self.progress.configure(value=val))
@@ -762,57 +779,101 @@ class ChatApp:
             for orig in sorted(glossary_dict.keys()):
                 f.write(f"{orig.capitalize()}: {glossary_dict[orig]}\n")
 
+
     def save_chat(self):
-        # 1. Text holen und bereinigen
+        # 1. Gesamten Text aus UI holen
         raw_content = self.chat_area.get("1.0", tk.END)
-        # Entfernt "--- ABSCHNITT X ---" Zeilen via Regex
-        clean_content = re.sub(r'--- ABSCHNITT \d+ ---', '', raw_content).strip()
+
+        # 2. Nur die Übersetzungen extrahieren
+        clean_content = self.extract_translations_only(raw_content)
 
         if not clean_content:
-            messagebox.showwarning("Fehler", "Nichts zum Speichern vorhanden.")
+            messagebox.showwarning("Fehler", "Keine übersetzten Abschnitte gefunden. "
+                                             "Achten Sie auf die Markierungen BEGINN/ENDE.")
             return
 
+        # 3. Dateidialog
         file_path = filedialog.asksaveasfilename(
-            filetypes=[("Text", "*.txt"), ("Word", "*.docx"), ("PDF", "*.pdf"), ("EPUB", "*.epub"), ("Markdown", "*.md"), ("Alle Dateien", "*.*")]
+            defaultextension=".txt",
+            filetypes=[
+                ("Text", "*.txt"),
+                ("Word", "*.docx"),
+                ("PDF", "*.pdf"),
+                ("EPUB", "*.epub"),
+                ("Markdown", "*.md")
+            ]
         )
 
         if not file_path:
             return
+
         ext = os.path.splitext(file_path)[1].lower()
 
         try:
             if ext == ".docx":
+                from docx import Document
                 doc = Document()
+                # Text in Absätze teilen (nach echten Umbrüchen im Quelltext)
                 for line in clean_content.split('\n'):
-                    doc.add_paragraph(clean_content)
+                    line = line.strip()
+                    if line:
+                        doc.add_paragraph(line)
+                    else:
+                        doc.add_paragraph("")  # Leerzeile erhalten
                 doc.save(file_path)
+
             elif ext == ".pdf":
+                from fpdf import FPDF
                 pdf = FPDF()
                 pdf.add_page()
                 pdf.set_auto_page_break(auto=True, margin=15)
-                # Standardfont (Achtung: FPDF braucht für Sonderzeichen oft TrueType Fonts)
                 pdf.set_font("Arial", size=11)
-                # Text einfügen (latin-1 Encoding für FPDF Standard)
-                pdf.multi_cell(0, 10, clean_content.encode('latin-1', 'replace').decode('latin-1'))
+                # UTF-8 zu Latin-1 Konvertierung mit Fallback für Sonderzeichen
+                safe_text = clean_content.encode('latin-1', 'replace').decode('latin-1')
+                pdf.multi_cell(0, 10, safe_text)
                 pdf.output(file_path)
+
             elif ext == ".epub":
-                # Vereinfachter Export als Text-EPUB
                 from ebooklib import epub
                 book = epub.EpubBook()
-                book.set_title("KI Übersetzung")
-                c1 = epub.EpubHtml(title='Kapitel 1', file_name='chap_1.xhtml', lang='de')
-                c1.content = f"<html><body><p>{clean_content.replace(chr(10), '<br/>')}</p></body></html>"
+                basisname = os.path.basename(file_path).replace(ext, "")
+                book.set_identifier(f"id_{int(time.time())}")
+                book.set_title(basisname)
+                book.set_language('de')
+
+                # HTML-Inhalt erstellen (Zeilenumbrüche erhalten)
+                html_body = clean_content.replace('\n', '<br/>')
+                c1 = epub.EpubHtml(title='Übersetzung', file_name='chap_1.xhtml', lang='de')
+                c1.content = f"<html><body><h1>{basisname}</h1><p>{html_body}</p></body></html>"
+
                 book.add_item(c1)
                 book.spine = ['nav', c1]
                 epub.write_epub(file_path, book)
-            else:  # Standard txt
+
+            else:  # TXT oder Markdown
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(clean_content)
 
-            messagebox.showinfo("Erfolg", "Datei wurde gespeichert!")
+            messagebox.showinfo("Erfolg", f"Datei wurde als {ext.upper()} gespeichert!")
+
         except Exception as e:
+            log.error(f"Speicherfehler: {e}")
             messagebox.showerror("Fehler", f"Speichern fehlgeschlagen: {e}")
 
+    def extract_translations_only(self, text):
+        """
+        Extrahiert nur den Text, der zwischen '--- BEGINN ABSCHNITT X'
+        und '--- ENDE ABSCHNITT X' steht.
+        """
+        # Findet alle Blöcke zwischen BEGINN und ENDE (S-Flag für Multiline Dot)
+        pattern = r"--- BEGINN ABSCHNITT \d+ ---(.*?)--- ENDE ABSCHNITT \d+ ---"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        # Bereinigt jeden Block (entfernt führende/folgende Leerzeilen)
+        cleaned_matches = [m.strip() for m in matches]
+
+        # Fügt sie mit doppeltem Zeilenumbruch zusammen
+        return "\n\n".join(cleaned_matches)
 
 if __name__ == "__main__":
     root = tk.Tk()
