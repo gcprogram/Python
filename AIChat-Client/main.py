@@ -614,7 +614,6 @@ class ChatApp:
                 # Retry-Logik bei Abbruch
                 while attempts < 2 and not success:
                     translation = self.send_sync_request(current_prompt, timeout=300)
-                    formatted_output = f"--- BEGINN ABSCHNITT {i + 1} ---\n{translation}\n--- ENDE ABSCHNITT {i + 1} ---\n"
                     # Qualitätscheck: Endet die Übersetzung abrupt?
                     valid_punc = ".!?;:»«\"ˮ"
                     source_ends_punc = content.strip()[-1] in valid_punc
@@ -861,19 +860,15 @@ class ChatApp:
             messagebox.showerror("Fehler", f"Speichern fehlgeschlagen: {e}")
 
     def extract_translations_only(self, text):
-        """
-        Extrahiert nur den Text, der zwischen '--- BEGINN ABSCHNITT X'
-        und '--- ENDE ABSCHNITT X' steht.
-        """
-        # Findet alle Blöcke zwischen BEGINN und ENDE (S-Flag für Multiline Dot)
-        pattern = r"--- BEGINN ABSCHNITT \d+ ---(.*?)--- ENDE ABSCHNITT \d+ ---"
+        pattern = r"--- BEGINN ABSCHNITT \d+\n(.*?)\n--- ENDE ABSCHNITT \d+"
         matches = re.findall(pattern, text, re.DOTALL)
 
-        # Bereinigt jeden Block (entfernt führende/folgende Leerzeilen)
-        cleaned_matches = [m.strip() for m in matches]
+        # Falls Treffer gefunden wurden, geben wir sie (z.B. zusammengefügt) zurück
+        if matches:
+            return "\n".join(matches)
 
-        # Fügt sie mit doppeltem Zeilenumbruch zusammen
-        return "\n\n".join(cleaned_matches)
+        # Falls kein Pattern gefunden wurde, aber der Text nicht leer ist:
+        return text if text else ""
 
 if __name__ == "__main__":
     root = tk.Tk()
