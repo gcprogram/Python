@@ -116,36 +116,56 @@ class ChatApp:
     #
     # Konfiguration laden
     #
-    def load_config(self):
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r") as f:
-                config = json.load(f)
-                self.api_key = config.get("api_key", "")
-                self.ip = config.get("ip", "")
-                self.port = config.get("port", "")
-                self.model = config.get("model", "")
-                self.models = config.get("models", [])
-                # Neue Parameter für die Übersetzung
-                self.translation_prompt = config.get("translation_prompt",
-                                                     "Übersetze den folgenden Text präzise ins Deutsche. Behalte Markdown-Formatierungen bei.")
-                self.max_chunk_chars = config.get("max_chunk_chars", 3500)
-                self.lang_source = config.get("lang_source", "en")
-                self.lang_target = config.get("lang_target", "de-DE")
+    def load_config(self, filename=CONFIG_FILE):
+        if os.path.exists(filename):
+            try:
+                with open(filename, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    self.api_key = config.get("api_key", "")
+                    self.ip = config.get("ip", "")
+                    self.port = config.get("port", "")
+                    self.model = config.get("model", "")
+                    self.models = config.get("models", [])
+                    self.translation_prompt = config.get("translation_prompt",
+                                                         "Übersetze den folgenden Text präzise ins Deutsche. Behalte Markdown-Formatierungen bei.")
+                    self.max_chunk_chars = config.get("max_chunk_chars", 3500)
+                    self.lang_source = config.get("lang_source", "en")
+                    self.lang_target = config.get("lang_target", "de-DE")
+
+                # Falls wir eine externe Datei geladen haben, aktualisieren wir ggf. die UI-Felder,
+                # sofern das Einstellungsfenster offen ist.
+                log.info(f"Konfiguration aus {filename} geladen.")
+            except Exception as e:
+                log.error(f"Fehler beim Laden der Config {filename}: {e}")
         else:
+            # Default Werte falls Datei nicht existiert
             self.api_key = self.ip = self.port = self.model = ""
             self.models = []
             self.translation_prompt = "Übersetze den folgenden Text präzise ins Deutsche."
             self.max_chunk_chars = 3500
-
+            self.lang_source = "en"
+            self.lang_target = "de-DE"
     #
     # Konfiguration speichern
     #
     def save_config(self):
-        # Extrahiere den Code aus "German (de)" -> "de"
-        selection = self.source_lang_combo.get()
-        self.lang_source = selection[selection.find("(") + 1: selection.find(")")]
-        selection = self.target_lang_combo.get()
-        self.lang_target = selection[selection.find("(") + 1: selection.find(")")]
+        # Zielpfad abfragen
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON Konfiguration", "*.json")],
+            initialfile="config.json",
+            title="Konfiguration speichern unter..."
+        )
+
+        if not file_path:
+            return
+
+        # Daten aus UI extrahieren
+        selection_s = self.source_lang_combo.get()
+        self.lang_source = selection_s[selection_s.find("(") + 1: selection_s.find(")")]
+        selection_t = self.target_lang_combo.get()
+        self.lang_target = selection_t[selection_t.find("(") + 1: selection_t.find(")")]
+
         config = {
             "api_key": self.token_entry.get(),
             "ip": self.ip_entry.get(),
@@ -154,15 +174,33 @@ class ChatApp:
             "models": self.models,
             "lang_source": self.lang_source,
             "lang_target": self.lang_target,
-            "translation_prompt": self.prompt_text.get("1.0", tk.END).strip(),  # Speicher Prompt
-            "max_chunk_chars": int(self.chunk_entry.get())  # Speichere Chunk-Größe
+            "translation_prompt": self.prompt_text.get("1.0", tk.END).strip(),
+            "max_chunk_chars": int(self.chunk_entry.get())
         }
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f)
 
-        self.load_config()  # Variablen neu laden
+        # 1. In gewählte Datei speichern
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+
+        # 2. Immer auch in die Standard-Config kopieren (für Auto-Load beim Start)
+        if file_path != CONFIG_FILE:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+
+        self.load_config(file_path)  # Variablen im Objekt aktualisieren
         self.processor.max_chunk_chars = self.max_chunk_chars
-        log.info("Einstellungen gespeichert.")
+        messagebox.showinfo("Erfolg", f"Einstellungen in {os.path.basename(file_path)} gespeichert.")
+
+    def manual_load_config(self, settings_window):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("JSON Konfiguration", "*.json")],
+            title="Konfiguration laden"
+        )
+        if file_path:
+            self.load_config(file_path)
+            # Schließe das Einstellungsfenster und öffne es neu, um die Felder zu aktualisieren
+            settings_window.destroy()
+            self.open_settings()
 
     #
     # Einstellungsfenster bauen
@@ -241,12 +279,23 @@ class ChatApp:
         self.load_models_button = tk.Button(button_frame, text="Modelle laden", command=self.load_models)
         self.load_models_button.pack(side=tk.LEFT, padx=5)
 
+        # NEU: Konfiguration Laden Button
+        load_btn = tk.Button(
+            button_frame,
+            text="Config Laden",
+            command=lambda: self.manual_load_config(settings_window),
+            width=12
+        )
+
+        load_btn.pack(side=tk.LEFT, padx=5)
+
         # Speichern Button
         save_btn = tk.Button(
             button_frame,
             text="Speichern",
-            command=lambda: [self.save_config()],
-            width=15
+            command=lambda: [self.save_config(), settings_window.destroy()],
+            width=12,
+            bg = "#e1f5fe"
         )
         save_btn.pack(side=tk.LEFT, padx=5)
 
@@ -255,7 +304,7 @@ class ChatApp:
             button_frame,
             text="Schließen",
             command=settings_window.destroy,
-            width=15
+            width=12
         )
         close_btn.pack(side=tk.RIGHT, padx=5)
 
