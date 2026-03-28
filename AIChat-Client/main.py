@@ -567,7 +567,7 @@ class ChatApp:
             if self.last_type is not None:
                 self.chat_area.insert(tk.END, "\n")
 
-            header = "Reasoning:\n" if content_type == "reasoning" else "KI:\n"
+            header = "Reasoning:\n" if content_type == "reasoning" else "\n"
             tag = "reasoning" if content_type == "reasoning" else "message"
 
             self.chat_area.insert(tk.END, header, (tag, "bold"))
@@ -586,7 +586,7 @@ class ChatApp:
         if not user_message:
             return
 
-        self.chat_area.insert(tk.END, f"Du: {user_message}\n")
+        self.chat_area.insert(tk.END, f"\n{user_message}\n")
         self.user_input.delete("1.0", tk.END)
         self.last_type = None  # Reset für die neue Antwort
 
@@ -727,19 +727,20 @@ class ChatApp:
         endpoint = "/v1/completions" if is_gemma else "/v1/chat/completions"
         url = f"http://{self.ip}:{self.port}{endpoint}"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        s_name = LANG_MAP.get(self.lang_source, "Original Language")
+        t_name = LANG_MAP.get(self.lang_target, "Target Language")
 
         # Payload zusammenbauen
         if is_gemma:
             # Wir bilden das Jinja-Template in Python nach:
-            s_name = LANG_MAP.get(self.lang_source, "Original Language")
-            t_name = LANG_MAP.get(self.lang_target, "Target Language")
             # Das ist das exakte Format, das dein Jinja-Template erzeugen würde:
             full_raw_prompt = (
                 f"<start_of_turn>user\n"
                 f"You are a professional {s_name} ({self.lang_source}) to {t_name} ({self.lang_target}) translator. "
                 f"Your goal is to accurately convey the meaning and nuances of the original {s_name} text "
                 f"while adhering to {t_name} grammar, vocabulary, and cultural sensitivities.\n"
-                f"Produce only the {t_name} translation, without any additional explanations or commentary. "
+                f"Produce only the {t_name} translation, without any additional explanations or commentary, "
+                f"Preserve the Markdown format in the translation. "
                 f"Please translate the following Markdown text from {s_name} into {t_name}:\n\n\n"
                 f"{prompt.strip()}<end_of_turn>\n"
                 f"<start_of_turn>model\n"
@@ -779,6 +780,7 @@ class ChatApp:
 
     def generate_dictionary(self, text_sample):
         """Fragt die KI nach den wichtigsten Begriffen."""
+
         dictionary_prompt = (
             "Create a glossary/dictionary for translation to German. "
             "Extract only special and technical terms, proper names, and fictional terms. Only list single or connected words."
