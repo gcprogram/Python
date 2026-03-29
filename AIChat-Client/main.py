@@ -92,6 +92,7 @@ class ChatApp:
         self.last_type = None
         self.load_start_time = None
         self.response_id = ""
+        self.chat_history = []
 
     #
     # Bringt die Status Bar unter das Hauptfenster
@@ -444,15 +445,24 @@ class ChatApp:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+        # 1. Aktuelle Nachricht zur Historie hinzufügen
+        if not hasattr(self, 'chat_history'):
+            self.chat_history = []
+        self.chat_history.append({"role": "user", "content": message})
 
-        # Sicherstellen, dass die Payload so aussieht, wie die API sie braucht.
-        # Falls es ein OpenAI-kompatibler Endpunkt ist, müsste es 'messages' sein.
+        # 2. Historie für das Feld 'input' formatieren (Sliding Window: letzte 6 Einträge)
+        # Wir bauen einen String, den das Modell als Gespräch versteht
+        history_context = ""
+        for msg in self.chat_history[-10:]:
+            prefix = "User: " if msg["role"] == "user" else "Assistant: "
+            history_context += f"{prefix}{msg['content']}\n"
+
+        # 3. Payload mit dem Feld 'input' (wie vom Server gefordert)
         payload = {
-            "input": message,  # Beibehalten, falls deine API das so braucht
+            "input": history_context,  # Hier ist der gesamte Kontext drin
             "model": self.model,
             "stream": True
         }
-
         if self.response_id:
             payload["previous_response_id"] = self.response_id
 
@@ -465,6 +475,7 @@ class ChatApp:
             log.info(f"Response erhalten: Status {response.status_code}")
 
             if response.status_code == 200:
+                full_assistant_reply = ""
                 for line in response.iter_lines():
                     if line:
                         decoded_line = line.decode('utf-8').strip()
@@ -473,6 +484,8 @@ class ChatApp:
                             # Innerhalb der for-Schleife in chat_with_ai:
                             try:
                                 chunk = json.loads(json_str)
+                                if "response_id" in chunk:
+                                    self.response_id = chunk["response_id"]
                                 chunk_type = chunk.get("type", "")
 
                                 # FALL 1: Modell lädt noch (Progress-Anzeige)
@@ -511,14 +524,18 @@ class ChatApp:
                                     # Status-Bar zurücksetzen, wenn die erste Antwort kommt
                                     if self.status_var.get() != "KI schreibt...":
                                         self.master.after(0, lambda: self.status_var.set("KI schreibt..."))
+                                    content = chunk.get("content", "")
+                                    full_assistant_reply += content  # Antwort sammeln
                                     item = {
                                         "type": chunk_type.split(".")[0],
-                                        "content": chunk.get("content", "")
+                                        "content": content
                                     }
                                     self.master.after(0, self._update_chat_ui, item)
 
                                 # Ende des Chats
                                 elif chunk_type == "chat.end":
+                                    self.chat_history.append({"role": "assistant", "content": full_assistant_reply})
+                                    self.chat_area.insert(tk.END, "\n")
                                     self.master.after(0, lambda: self.status_var.set("Bereit"))
 
                             except json.JSONDecodeError:
@@ -586,7 +603,11 @@ class ChatApp:
         if not user_message:
             return
 
-        self.chat_area.insert(tk.END, f"\n{user_message}\n")
+        # Nachricht zur Historie hinzufügen
+        self.chat_history.append({"role": "user", "content": user_message})
+
+        self.chat_area.insert(tk.END, f"{user_message}\n\n")
+        self.chat_area.see(tk.END)
         self.user_input.delete("1.0", tk.END)
         self.last_type = None  # Reset für die neue Antwort
 
