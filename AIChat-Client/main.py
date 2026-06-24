@@ -537,6 +537,17 @@ class ChatApp:
                                     self.chat_history.append({"role": "assistant", "content": full_assistant_reply})
                                     self.chat_area.insert(tk.END, "\n")
                                     self.master.after(0, lambda: self.status_var.set("Bereit"))
+                                    # Viele Engines senden hier ein 'usage' Objekt mit
+                                    usage = chunk.get("usage", {})
+                                    prompt_tokens = usage.get("prompt_tokens", 0)
+                                    completion_tokens = usage.get("completion_tokens", 0)
+                                    total_tokens = usage.get("total_tokens", 0)
+
+                                    log.info(f"Token-Verbrauch dieses Requests: prompt, completion, total {prompt_tokens},{completion_tokens},{total_tokens}")
+
+                                    # Hier kannst du deine Aufräum-Logik triggern
+                                    if total_tokens > 3000:  # Beispielhafter Schwellenwert
+                                        log.info("Token-Limit erreicht. Kürze Historie...")
 
                             except json.JSONDecodeError:
                                 continue
