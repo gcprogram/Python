@@ -1,0 +1,36 @@
+// Funktion zum Laden und Initialisieren eines WebAssembly-Moduls
+const wasmModulePromise = new Promise((resolve, reject) => {
+    // Erstelle ein <script>-Element für das Wasm-Modul
+    const script = document.createElement('script');
+    script.src = 'path/to/your/module.js';  // Hier war die verschlüsselte URL
+    script.type = 'text/javascript';
+
+    // Wenn das Skript geladen wurde
+    script.onload = () => {
+        try {
+            // Initialisiere die Funktionen aus dem Wasm-Modul
+            const getStart = Module.cwrap('get_start', 'number', ['number']);
+            const hash = Module.cwrap('hash', 'number', ['number']);
+            const hashXY = Module.cwrap('hash_xy', 'number', ['number', 'number', 'number']);
+            const c02GetFireX = Module.cwrap('c02_get_fire_x', 'number', ['number']);
+            const c02GetFireY = Module.cwrap('c02_get_fire_y', 'number', ['number']);
+
+            // Übergib die Funktionen über das Promise-Resolve
+            resolve({
+                get_start: value => getStart(value) >>> 0,
+                hash: value => hash(value) >>> 0,
+                hash_xy: (x, y, z) => hashXY(x, y, z) >>> 0,
+                c02_get_fire_x: value => c02GetFireX(value) >>> 0,
+                c02_get_fire_y: value => c02GetFireY(value) >>> 0
+            });
+        } catch (err) {
+            reject(err);
+        }
+    };
+
+    // Fehler beim Laden
+    script.onerror = () => reject(new Error('Failed to load wasm module'));
+
+    // Füge das Skript zur Seite hinzu
+    document.head.appendChild(script);
+});

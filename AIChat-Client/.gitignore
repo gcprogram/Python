@@ -1,0 +1,7 @@
+.idea
+.venv
+__pycache__
+easter_islands.txt
+dictionary.txt
+*config.json
+jinja_template_aus_LM-Studio.txt
