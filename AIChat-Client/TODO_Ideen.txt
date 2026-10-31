@@ -3,6 +3,5 @@ TODO:
 * Button New Chat -> History-Delete
 * Button Load AI Companion -> Role die nicht angezeigt wird.
 * -> Bild oder Video
-* -> Evtl. sogar Bild der Szene
 * Context-Strategie: Ältestes löschen? Oder Zusammenfassung und löschen der ältesten.
 
